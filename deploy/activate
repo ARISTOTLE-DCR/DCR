@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_ROOT="/opt/dcr"
+AGENT_ROOT="${APP_ROOT}/aristotle-output/input_aristotle"
+OBSERVER_ROOT="${APP_ROOT}/observer"
+SECRETS_FILE="/etc/dcr/secrets.env"
+LOCK_FILE="/run/lock/dcr-activate.lock"
+MODE="live"
+
+usage() {
+  echo "Usage: activate [--dry-run] <token_address>"
+  echo
+  echo "  activate <CA>             validate ownership and start live signing"
+  echo "  activate --dry-run <CA>   observe a PONS token without transactions"
+}
+
+if [[ "${1:-}" == "--dry-run" ]]; then
+  MODE="dry-run"
+  shift
+fi
+
+if [[ "$#" -ne 1 ]]; then
+  usage
+  exit 64
+fi
+
+TOKEN_ADDRESS="$1"
+if [[ ! "$TOKEN_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+  echo "Invalid EVM token address: ${TOKEN_ADDRESS}" >&2
+  exit 64
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "activate must be run as root." >&2
+  exit 77
+fi
+
+if [[ ! -r "$SECRETS_FILE" ]]; then
+  echo "Missing protected server secrets: ${SECRETS_FILE}" >&2
+  exit 78
+fi
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "Another DCR activation is already running." >&2
+  exit 75
+fi
+
+set -a
+# shellcheck disable=SC1090
+source "$SECRETS_FILE"
+set +a
+
+if [[ -z "${RPC_URL:-}" || -z "${CREATOR_PRIVATE_KEY:-}" ]]; then
+  echo "RPC_URL and CREATOR_PRIVATE_KEY are required in ${SECRETS_FILE}." >&2
+  exit 78
+fi
+
+echo "Validating token, canonical PONS pool, and fee recipient..."
+VALIDATION_JSON="$(
+  cd "$APP_ROOT"
+  /usr/bin/node deploy/validate-token.mjs "$MODE" "$TOKEN_ADDRESS"
+)"
+CANONICAL_TOKEN="$(jq -r '.token' <<<"$VALIDATION_JSON")"
+TOKEN_SYMBOL="$(jq -r '.symbol' <<<"$VALIDATION_JSON")"
+POOL_ADDRESS="$(jq -r '.pool' <<<"$VALIDATION_JSON")"
+FEE_RECIPIENT="$(jq -r '.feeRecipient' <<<"$VALIDATION_JSON")"
+SIGNER_ADDRESS="$(jq -r '.signer' <<<"$VALIDATION_JSON")"
+
+TOKEN_SLUG="$(tr '[:upper:]' '[:lower:]' <<<"${CANONICAL_TOKEN#0x}")"
+STATE_FILE="./data/dcr-${TOKEN_SLUG}.json"
+OBSERVER_STATE_FILE="../aristotle-output/input_aristotle/data/dcr-${TOKEN_SLUG}.json"
+OBSERVER_DATA_DIR="./data/${TOKEN_SLUG}"
+SIGNING_ENABLED="true"
+AGENT_PRIVATE_KEY="$CREATOR_PRIVATE_KEY"
+if [[ "$MODE" == "dry-run" ]]; then
+  SIGNING_ENABLED="false"
+  AGENT_PRIVATE_KEY=""
+fi
+
+install -d -o dcragent -g dcrstate -m 2750 \
+  "${AGENT_ROOT}/data"
+install -d -o dcrobserver -g dcrlogs -m 2770 \
+  "${OBSERVER_ROOT}/data" \
+  "${OBSERVER_ROOT}/data/${TOKEN_SLUG}"
+
+AGENT_ENV_TMP="$(mktemp "${AGENT_ROOT}/.env.activate.XXXXXX")"
+OBSERVER_ENV_TMP="$(mktemp "${OBSERVER_ROOT}/.env.activate.XXXXXX")"
+cleanup() {
+  rm -f "$AGENT_ENV_TMP" "$OBSERVER_ENV_TMP"
+}
+trap cleanup EXIT
+
+cat >"$AGENT_ENV_TMP" <<EOF
+TOKEN_ADDRESS=${CANONICAL_TOKEN}
+CREATOR_PRIVATE_KEY=${AGENT_PRIVATE_KEY}
+RPC_URL=${RPC_URL}
+SIGNING_ENABLED=${SIGNING_ENABLED}
+STATE_FILE=${STATE_FILE}
+EOF
+
+cat >"$OBSERVER_ENV_TMP" <<EOF
+TOKEN_ADDRESS=${CANONICAL_TOKEN}
+RPC_URL=${RPC_URL}
+OBSERVER_PORT=4174
+OBSERVER_HOST=127.0.0.1
+OBSERVER_POLL_MS=15000
+AGENT_ROOT=../aristotle-output/input_aristotle
+AGENT_STATE_FILE=${OBSERVER_STATE_FILE}
+ARISTOTLE_ARCHIVE=../aristotle-result.tar.gz
+OBSERVER_DATA_DIR=${OBSERVER_DATA_DIR}
+EOF
+
+chown root:dcragent "$AGENT_ENV_TMP"
+chown root:dcrruntime "$OBSERVER_ENV_TMP"
+chmod 0640 "$AGENT_ENV_TMP" "$OBSERVER_ENV_TMP"
+mv -f "$AGENT_ENV_TMP" "${AGENT_ROOT}/.env"
+mv -f "$OBSERVER_ENV_TMP" "${OBSERVER_ROOT}/.env"
+trap - EXIT
+
+echo "Starting DCR agent (${MODE})..."
+systemctl restart dcr-agent.service
+
+STATE_ABSOLUTE="${AGENT_ROOT}/data/dcr-${TOKEN_SLUG}.json"
+STATE_READY="false"
+for _ in $(seq 1 90); do
+  if [[ -s "$STATE_ABSOLUTE" ]] &&
+    jq -e '.lastTimestamp > 0' "$STATE_ABSOLUTE" >/dev/null 2>&1; then
+    STATE_READY="true"
+    break
+  fi
+  if ! systemctl is-active --quiet dcr-agent.service; then
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$STATE_READY" != "true" ]]; then
+  echo "Agent did not produce its first validated state." >&2
+  journalctl -u dcr-agent.service -n 40 --no-pager >&2
+  exit 1
+fi
+
+echo "Starting observer and public dashboard..."
+systemctl restart dcr-observer.service
+
+STATUS_JSON=""
+EXPECTED_TOKEN_LOWER="$(tr '[:upper:]' '[:lower:]' <<<"$CANONICAL_TOKEN")"
+for _ in $(seq 1 60); do
+  STATUS_JSON="$(
+    curl -fsS --max-time 3 http://127.0.0.1:4174/api/status 2>/dev/null || true
+  )"
+  STATUS_TOKEN_LOWER="$(
+    jq -r '.snapshot.token.address // empty' <<<"$STATUS_JSON" 2>/dev/null |
+      tr '[:upper:]' '[:lower:]'
+  )"
+  if [[ "$STATUS_TOKEN_LOWER" == "$EXPECTED_TOKEN_LOWER" ]]; then
+    break
+  fi
+  STATUS_JSON=""
+  sleep 1
+done
+
+if [[ -z "$STATUS_JSON" ]]; then
+  echo "Observer did not publish the activated token." >&2
+  journalctl -u dcr-observer.service -n 40 --no-pager >&2
+  exit 1
+fi
+
+echo
+echo "DCR activation complete"
+echo "  mode:          ${MODE}"
+echo "  token:         ${CANONICAL_TOKEN} (${TOKEN_SYMBOL})"
+echo "  pool:          ${POOL_ADDRESS}"
+echo "  fee recipient: ${FEE_RECIPIENT}"
+echo "  signer:        ${SIGNER_ADDRESS}"
+echo "  dashboard:     https://dcr-rh.tech"
+if [[ "$MODE" == "dry-run" ]]; then
+  echo "  transactions:  disabled"
+else
+  echo "  transactions:  ENABLED"
+fi

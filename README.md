@@ -239,6 +239,28 @@ events.
    key as static content.
 7. Back up the agent state and transaction-monitoring records before upgrades.
 
+The production server installation exposes a root-only activation command:
+
+```sh
+activate <PONS_TOKEN_ADDRESS>
+```
+
+It validates chain `4663`, the PONS launch record, canonical pool, paired WETH,
+and the resolved creator-fee recipient before changing the active token.
+Signing is enabled only when the protected server key is exactly that
+fee-recipient wallet. The command then assigns token-specific state/history
+paths, starts the agent, waits for its first state, starts the observer, and
+verifies that the public API is serving the requested token.
+
+For a read-only preview of any valid PONS token:
+
+```sh
+activate --dry-run <PONS_TOKEN_ADDRESS>
+```
+
+The preview form never places the private key in the agent environment and
+forces `SIGNING_ENABLED=false`.
+
 The observer serves the compiled dashboard automatically when
 `dashboard/dist/` exists.
 

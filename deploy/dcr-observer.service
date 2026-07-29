@@ -1,0 +1,25 @@
+[Unit]
+Description=DCR read-only observer and public dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=dcrobserver
+Group=dcrobserver
+SupplementaryGroups=dcrstate dcrlogs dcrruntime
+WorkingDirectory=/opt/dcr/observer
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dcr/aristotle-output/input_aristotle/data /opt/dcr/observer/data
+
+[Install]
+WantedBy=multi-user.target

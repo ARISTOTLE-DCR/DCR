@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+RELEASE_ARCHIVE="${1:-/tmp/dcr-release.tgz}"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "install-server must be run as root." >&2
+  exit 77
+fi
+
+if [[ ! -f "$RELEASE_ARCHIVE" ]]; then
+  echo "Release archive not found: ${RELEASE_ARCHIVE}" >&2
+  exit 66
+fi
+
+echo "Stopping and removing confirmed legacy applications..."
+systemctl disable --now \
+  arc-auto-buyer.service \
+  arc-launch-watcher.service \
+  thepit.service \
+  2>/dev/null || true
+pkill -f "/opt/hood-freaks" 2>/dev/null || true
+systemctl disable --now \
+  postgresql.service \
+  postgresql@16-main.service \
+  2>/dev/null || true
+
+rm -f -- \
+  /etc/systemd/system/arc-auto-buyer.service \
+  /etc/systemd/system/arc-launch-watcher.service \
+  /etc/systemd/system/thepit.service \
+  /etc/arc-auto-buyer.env \
+  /etc/arc-launch-watcher.env
+rm -rf -- \
+  /etc/thepit \
+  /opt/arc-auto-buyer \
+  /opt/arc-launch-watcher \
+  /opt/hood-freaks \
+  /opt/thepit \
+  /opt/thepit-backups \
+  /var/lib/arc-auto-buyer \
+  /var/lib/arc-launch-watcher \
+  /var/lib/thepit \
+  /var/www/html
+
+rm -f -- \
+  /etc/nginx/sites-enabled/hood-freaks \
+  /etc/nginx/sites-enabled/hood-freaks-test \
+  /etc/nginx/sites-enabled/thepit \
+  /etc/nginx/sites-enabled/default \
+  /etc/nginx/sites-available/hood-freaks \
+  /etc/nginx/sites-available/hood-freaks-test \
+  /etc/nginx/sites-available/thepit \
+  /etc/nginx/sites-available/default
+
+for cert_name in \
+  hood-freaks.203-161-52-51.sslip.io \
+  hood-test.203-161-52-51.sslip.io \
+  hoodfreaks.art \
+  rhstr.fun \
+  trenchpit.fun; do
+  certbot delete \
+    --cert-name "$cert_name" \
+    --non-interactive \
+    >/dev/null 2>&1 || true
+done
+
+for old_user in arcbuyer arcwatch thepit; do
+  if id "$old_user" >/dev/null 2>&1; then
+    userdel "$old_user" || true
+  fi
+done
+
+systemctl daemon-reload
+systemctl reset-failed
+
+echo "Installing DCR source and dependencies..."
+for group_name in dcrruntime dcrstate dcrlogs; do
+  if ! getent group "$group_name" >/dev/null 2>&1; then
+    groupadd --system "$group_name"
+  fi
+done
+if ! id dcragent >/dev/null 2>&1; then
+  useradd \
+    --system \
+    --home-dir /opt/dcr \
+    --shell /usr/sbin/nologin \
+    --groups dcrruntime,dcrstate,dcrlogs \
+    dcragent
+fi
+if ! id dcrobserver >/dev/null 2>&1; then
+  useradd \
+    --system \
+    --home-dir /opt/dcr \
+    --shell /usr/sbin/nologin \
+    --groups dcrruntime,dcrstate,dcrlogs \
+    dcrobserver
+fi
+rm -rf -- /opt/dcr
+install -d -o root -g dcrruntime -m 0750 /opt/dcr
+tar -xzf "$RELEASE_ARCHIVE" -C /opt/dcr
+rm -f -- "$RELEASE_ARCHIVE"
+find /opt/dcr -type f -name "._*" -delete
+install -o root -g root -m 0755 "$0" /opt/dcr/deploy/install-server
+chmod 0755 /opt/dcr/deploy/activate
+
+cd /opt/dcr/aristotle-output/input_aristotle
+npm ci --no-audit --no-fund
+npm run typecheck
+npm test
+npm run build
+
+cd /opt/dcr/dashboard
+export VITE_TWITTER_URL="https://x.com/"
+export VITE_TOKEN_TICKER="DCR"
+npm ci --no-audit --no-fund
+npm run typecheck
+npm run build
+
+cd /opt/dcr/observer
+npm ci --no-audit --no-fund
+npm run typecheck
+npm run build
+
+chown -R root:dcrruntime /opt/dcr
+install -d -o dcragent -g dcrstate -m 2750 \
+  /opt/dcr/aristotle-output/input_aristotle/data
+install -d -o dcrobserver -g dcrlogs -m 2770 \
+  /opt/dcr/observer/data
+install -d -o root -g dcragent -m 0750 /etc/dcr
+
+install -o root -g root -m 0644 \
+  /opt/dcr/deploy/dcr-agent.service \
+  /etc/systemd/system/dcr-agent.service
+install -o root -g root -m 0644 \
+  /opt/dcr/deploy/dcr-observer.service \
+  /etc/systemd/system/dcr-observer.service
+install -o root -g root -m 0755 \
+  /opt/dcr/deploy/activate \
+  /usr/local/sbin/activate
+install -o root -g root -m 0644 \
+  /opt/dcr/deploy/dcr-rh.tech.nginx \
+  /etc/nginx/sites-available/dcr-rh.tech
+ln -sfn \
+  /etc/nginx/sites-available/dcr-rh.tech \
+  /etc/nginx/sites-enabled/dcr-rh.tech
+
+systemctl daemon-reload
+systemctl enable dcr-agent.service dcr-observer.service
+nginx -t
+systemctl reload nginx
+
+echo "DCR_INSTALL_COMPLETE"

@@ -1,0 +1,25 @@
+[Unit]
+Description=DCR Aristotle creator-fee agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=dcragent
+Group=dcragent
+SupplementaryGroups=dcrstate dcrlogs dcrruntime
+WorkingDirectory=/opt/dcr/observer
+ExecStart=/usr/bin/node dist/run-agent.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dcr/aristotle-output/input_aristotle/data /opt/dcr/observer/data
+
+[Install]
+WantedBy=multi-user.target
