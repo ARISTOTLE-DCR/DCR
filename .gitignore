@@ -1,0 +1,29 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+.lake/
+*.tsbuildinfo
+dashboard/vite.config.js
+dashboard/vite.config.d.ts
+
+# Runtime state and logs
+data/
+*.log
+*.pid
+
+# Local tooling and visual test output
+.aristotle-client/
+.playwright-cli/
+output/
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

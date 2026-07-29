@@ -1,0 +1,11 @@
+import test from "node:test";import assert from "node:assert/strict";
+import {decide,initialState,nextDelayMs,priceRational,returnQ} from "../src/math.js";
+const base={...initialState(),lastSqrtPriceX96:"1000000"};
+const obs=(s:bigint)=>({block:1,timestamp:1,sqrtPriceX96:s,liquidity:1_000_000n,volumeWeth:0n,swapCount:1});
+test("exact rational price orientation",()=>{assert.deepEqual(priceRational(2n,true),[4n,1n<<192n]);assert.deepEqual(priceRational(2n,false),[1n<<192n,4n]);});
+test("controller buys a sharp fall",()=>assert.equal(decide(obs(900000n),base,10000n,10000n,true).kind,"buy"));
+test("controller sells a sharp rise",()=>assert.equal(decide(obs(1100000n),base,10000n,10000n,true).kind,"sell"));
+test("controller respects inverted V3 orientation",()=>assert.equal(decide(obs(1100000n),base,10000n,10000n,false).kind,"buy"));
+test("dead-zone holds and empty reservoir is safe",()=>{assert.equal(decide(obs(1000001n),base,10000n,10000n,true).kind,"hold");assert.equal(decide(obs(900000n),base,0n,10000n,true).kind,"hold");});
+test("integer return has correct sign",()=>{assert(returnQ(10n,11n)>0n);assert(returnQ(10n,9n)<0n);});
+test("jitter is 10 to 15 minutes",()=>{assert.equal(nextDelayMs(()=>0),600000);assert(nextDelayMs(()=>0.999999)<900000);});
