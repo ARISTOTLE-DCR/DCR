@@ -8,6 +8,7 @@ const EXPECTED_ARCHIVE =
 const EXPECTED_SOURCE =
   "21c9137399f51c1205a269b5e24b48a67b89eb0bb2745d792d70b362ffc685d2";
 const SKIP = new Set(["node_modules", "dist", ".lake", ".git", "data"]);
+const SKIP_FILES = new Set([".env"]);
 
 function hashFile(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -20,7 +21,7 @@ function immutableSourceFiles(root: string): string[] {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP.has(entry.name)) walk(path);
-      } else {
+      } else if (!SKIP_FILES.has(entry.name)) {
         files.push(path);
       }
     }
