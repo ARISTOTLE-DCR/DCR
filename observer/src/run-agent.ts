@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFile, unlink } from "node:fs/promises";
 import { config as loadEnv } from "dotenv";
 import { Store } from "./db.js";
 
@@ -197,6 +198,30 @@ console.error = (...args: unknown[]): void => {
   originalError(...args);
   store.saveAgentEvent("stderr", { args });
 };
+
+const deferredStartFile = join(dataDir, "deferred-start.json");
+try {
+  const deferred = JSON.parse(
+    await readFile(deferredStartFile, "utf8")
+  ) as { nextRunAt?: string };
+  const nextRunAt = Date.parse(deferred.nextRunAt ?? "");
+  const delayMs = Math.max(0, nextRunAt - Date.now());
+  if (Number.isFinite(nextRunAt) && delayMs > 0) {
+    originalLog(`deferred next cycle in ${(delayMs / 60_000).toFixed(2)} minutes`);
+    store.saveAgentEvent("schedule", {
+      line: "deferred restart after scheduled external cycle",
+      delayMs,
+      nextRunAt: new Date(nextRunAt).toISOString()
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+  }
+  await unlink(deferredStartFile);
+} catch (error) {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code !== "ENOENT") {
+    originalError("deferred start ignored safely:", error);
+  }
+}
 
 process.chdir(agentRoot);
 await import(pathToFileURL(join(agentRoot, "dist/cli.js")).href);
