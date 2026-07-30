@@ -419,13 +419,18 @@ export function App() {
         </aside>
 
         <div className="source-link-container">
-          <a className="source-link" href="/api/proof/archive">
+          <a
+            className="source-link"
+            href="https://github.com/ARISTOTLE-DCR/DCR"
+            rel="noreferrer"
+            target="_blank"
+          >
             <Barcode />
             <div className="source-link-text">
               <span className="text-micro source-primary">
-                // EXTRACT ARISTOTLE.TAR.GZ
+                // VIEW SOURCE ON GITHUB
               </span>
-              <span className="text-micro">VERIFY_SOURCE</span>
+              <span className="text-micro">ARISTOTLE-DCR/DCR ↗</span>
             </div>
           </a>
         </div>
