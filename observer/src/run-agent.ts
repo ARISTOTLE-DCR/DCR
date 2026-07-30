@@ -21,6 +21,107 @@ Object.assign(process.env, inheritedEnvironment);
 const store = new Store(dataDir);
 const originalLog = console.log.bind(console);
 const originalError = console.error.bind(console);
+let latestCycle: {
+  token: string;
+  observation?: { block?: number };
+  decision: {
+    kind: "buy" | "sell";
+    amount: string;
+    score?: string;
+    reason?: string;
+  };
+} | null = null;
+let retryInFlight = false;
+
+function captureRetryableCycle(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const cycle = value as Record<string, unknown>;
+  const decision = cycle.decision;
+  if (
+    typeof cycle.token !== "string" ||
+    !decision ||
+    typeof decision !== "object"
+  ) return;
+  const action = decision as Record<string, unknown>;
+  if (
+    (action.kind !== "buy" && action.kind !== "sell") ||
+    typeof action.amount !== "string"
+  ) return;
+  latestCycle = {
+    token: cycle.token,
+    ...(cycle.observation && typeof cycle.observation === "object"
+      ? { observation: cycle.observation as { block?: number } }
+      : {}),
+    decision: {
+      kind: action.kind,
+      amount: action.amount,
+      ...(typeof action.score === "string" ? { score: action.score } : {}),
+      ...(typeof action.reason === "string" ? { reason: action.reason } : {})
+    }
+  };
+}
+
+async function retryStaleQuote(): Promise<void> {
+  if (
+    retryInFlight ||
+    !latestCycle ||
+    process.env.SIGNING_ENABLED !== "true"
+  ) return;
+  retryInFlight = true;
+  const cycle = latestCycle;
+  try {
+    // The original executor remains untouched. A single immediate retry gives
+    // it a fresh quote after a volatile pool invalidates the first minOut.
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
+    const chain = await import(
+      pathToFileURL(join(agentRoot, "dist/chain.js")).href
+    );
+    const executor = await import(
+      pathToFileURL(join(agentRoot, "dist/executor.js")).href
+    );
+    const context = await chain.discover(
+      process.env.RPC_URL,
+      cycle.token,
+      process.env.CREATOR_PRIVATE_KEY || undefined
+    );
+    try {
+      const result = await executor.execute(
+        context,
+        {
+          kind: cycle.decision.kind,
+          amount: BigInt(cycle.decision.amount),
+          score: BigInt(cycle.decision.score ?? "0"),
+          reason:
+            `${cycle.decision.reason ?? "DCR signal"}; ` +
+            "automatic fresh-quote retry"
+        },
+        true
+      );
+      const payload = {
+        ...result,
+        automaticRetry: true,
+        amount: cycle.decision.amount,
+        originBlock: cycle.observation?.block
+      };
+      originalLog("execution retry", payload);
+      store.saveAgentEvent("execution", payload);
+    } finally {
+      context.provider.destroy();
+    }
+  } catch (error) {
+    const payload = {
+      status: "failed",
+      detail: `automatic fresh-quote retry failed safely: ${String(error).slice(0, 240)}`,
+      automaticRetry: true,
+      amount: cycle.decision.amount,
+      originBlock: cycle.observation?.block
+    };
+    originalError("execution retry", payload);
+    store.saveAgentEvent("execution", payload);
+  } finally {
+    retryInFlight = false;
+  }
+}
 
 console.log = (...args: unknown[]): void => {
   originalLog(...args);
@@ -37,6 +138,7 @@ console.log = (...args: unknown[]): void => {
     }
     try {
       const parsed = JSON.parse(args[0]) as unknown;
+      captureRetryableCycle(parsed);
       store.saveAgentEvent("cycle", parsed);
     } catch {
       store.saveAgentEvent("stdout", { line: args[0] });
@@ -46,6 +148,15 @@ console.log = (...args: unknown[]): void => {
   const label = args[0];
   if (label === "collection" || label === "execution") {
     store.saveAgentEvent(String(label), args[1]);
+    if (
+      label === "execution" &&
+      args[1] &&
+      typeof args[1] === "object" &&
+      String((args[1] as Record<string, unknown>).detail ?? "")
+        .includes("Too little received")
+    ) {
+      void retryStaleQuote();
+    }
   } else {
     store.saveAgentEvent("stdout", { args });
   }
