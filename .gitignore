@@ -20,6 +20,9 @@ data/
 .aristotle-client/
 .playwright-cli/
 output/
+input-v2/
+aristotle-v2-final.tar.gz
+aristotle-v2-submission.tar.gz
 
 # OS and editor files
 .DS_Store

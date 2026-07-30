@@ -1,3 +1,27 @@
+# Summary of changes for run a465e2f3-38d2-4387-897a-b1a45006b302
+Implemented and delivered DCR v2 as a runnable TypeScript/Lean project.
+
+Key additions:
+- Extended DCR with a mathematically derived one-sided solvency cone: BUY activates beyond the ordinary negative-curvature threshold, while SELL requires both an extreme `4d` rise and token-valued reserve surplus.
+- Added reachable HOLD, BUY, rare SELL, BURN, PERMANENT_LP, and WETH_AIRDROP policy branches with deterministic tests for every action.
+- Implemented canonical-pool V3 LP minting, tick-spacing-aligned ranges, dual-asset minimums, simulations, buffered gas, receipt/event/balance reconciliation, NFT verification, irreversible `transferFrom` locking, allowance cleanup, and interrupted-lock recovery.
+- Implemented bounded holder indexing, cursor hash/reorg checks, historical balance reconciliation, exclusions, canonical eligible-set commitments, future-block randomness, unbiased deterministic sampling without replacement, 1–10 recipient plans, direct WETH payouts, and crash-safe payout recovery.
+- Added token-specific atomic state, v1 baseline migration, persisted scheduling, cycle journals, transaction hashes, overlap refusal, LP/airdrop recovery plans, one fresh-quote swap retry, and dry-run-first operation.
+- Added `STRATEGY.md`, updated operational documentation, `.env.example`, migration tooling, and a hardened systemd service.
+- Extended `RequestProject/Main.lean` with proofs of strict sell-cone asymmetry and the 6.25%/10% allocation safety bounds, while retaining the original DCR contraction and reserve theorems.
+
+Verification:
+- `npm ci`: passed, with zero reported vulnerabilities.
+- `npm run typecheck`: passed.
+- `npm test`: all 21 deterministic tests passed.
+- `npm run build`: passed.
+- `lake build RequestProject.Main`: passed with no `sorry` or `admit`.
+- Lean axiom verification used only permitted standard axioms.
+- A real read-only Robinhood Chain inspection passed against the public fixture and broadcast no transaction.
+- The exact command report is in `VERIFICATION.md`. The environment had no local Anvil executable, so fork transaction scripts could not be executed here; this is explicitly recorded rather than represented as a successful fork run.
+
+All retained work was committed and pushed in commit `5cf2993`.
+
 # Summary of changes for run cf26e10a-a7d1-41be-a1db-9c3eed226b85
 Implemented the complete **PONS Curvature Reservoir** project.
 

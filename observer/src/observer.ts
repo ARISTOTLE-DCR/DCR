@@ -13,7 +13,11 @@ import {
 import { config } from "./config.js";
 import { Store } from "./db.js";
 import { hashProof } from "./provenance.js";
-import type { Activity, DecisionView, Snapshot } from "./types.js";
+import type {
+  Activity,
+  DecisionView,
+  Snapshot
+} from "./types.js";
 
 const CLAIM_ABI = [
   "error NoFeesToCollect()",
@@ -27,25 +31,73 @@ const TOKEN_ABI = [
   "function name() view returns(string)",
   "function symbol() view returns(string)",
   "function decimals() view returns(uint8)",
-  "function totalSupply() view returns(uint256)"
+  "function totalSupply() view returns(uint256)",
+  "event Transfer(address indexed from,address indexed to,uint256 value)"
 ];
 const NO_FEES_SELECTOR = "0x6a4ea9e4";
 
 interface AgentState {
-  version: 1;
+  version: 2;
+  token: string;
   lastBlock: number;
   lastTimestamp: number;
   lastSqrtPriceX96: string;
   reserveWeth: string;
   reserveToken: string;
-  integral: string;
+  flowIntegral: string;
   lastActionAt: number;
+  nextRunAt: number;
+  cycleSeq: number;
+  activeCycleId?: string;
+  holderCursor: number;
+}
+
+interface HolderIndex {
+  launchBlock: number;
+  cursor: number;
+  completeThrough: number;
+  balances: Record<string, string>;
+}
+
+interface CycleJournal {
+  cycleId: string;
+  action: Record<string, unknown>;
+  stage: "planned" | "executing" | "confirmed" | "failed";
+  updatedAt: number;
+}
+
+interface LpPlan {
+  cycleId: string;
+  stage:
+    | "planned"
+    | "mint_prepared"
+    | "minted"
+    | "lock_prepared"
+    | "locked"
+    | "failed";
+  tokenId?: string;
+}
+
+interface AirdropPlan {
+  cycleId: string;
+  totalWeth: string;
+  recipientCount?: number;
+  recipients: Array<{
+    status: "pending" | "submitted" | "confirmed" | "failed";
+  }>;
 }
 
 interface AgentModules {
   constants: Record<string, unknown>;
   chain: Record<string, (...args: never[]) => Promise<unknown>>;
   math: Record<string, (...args: never[]) => unknown>;
+}
+
+interface Sidecars {
+  holderIndex?: HolderIndex | undefined;
+  cycle?: CycleJournal | undefined;
+  lp?: LpPlan | undefined;
+  airdrop?: AirdropPlan | undefined;
 }
 
 let modulesPromise: Promise<AgentModules> | undefined;
@@ -63,12 +115,29 @@ async function agentModules(): Promise<AgentModules> {
   return modulesPromise;
 }
 
-async function readState(initialState: () => AgentState): Promise<AgentState> {
+async function readJson<T>(path: string): Promise<T | undefined> {
   try {
-    return JSON.parse(await readFile(config.stateFile, "utf8")) as AgentState;
+    return JSON.parse(await readFile(path, "utf8")) as T;
   } catch {
-    return initialState();
+    return undefined;
   }
+}
+
+async function readState(
+  initialState: (token: string) => AgentState
+): Promise<AgentState> {
+  const state = await readJson<AgentState>(config.stateFile);
+  return state?.version === 2 ? state : initialState(config.token);
+}
+
+async function readSidecars(): Promise<Sidecars> {
+  const [holderIndex, cycle, lp, airdrop] = await Promise.all([
+    readJson<HolderIndex>(join(config.agentDataDir, "holders.json")),
+    readJson<CycleJournal>(join(config.agentDataDir, "cycle.json")),
+    readJson<LpPlan>(join(config.agentDataDir, "lp.json")),
+    readJson<AirdropPlan>(join(config.agentDataDir, "airdrop.json"))
+  ]);
+  return { holderIndex, cycle, lp, airdrop };
 }
 
 function errorText(error: unknown): string {
@@ -82,27 +151,46 @@ function containsNoFees(error: unknown): boolean {
     if (value === null || value === undefined || seen.has(value)) return false;
     seen.add(value);
     if (typeof value === "string") {
-      return value.includes("NoFeesToCollect") || value.includes(NO_FEES_SELECTOR);
+      return value.includes("NoFeesToCollect") ||
+        value.includes(NO_FEES_SELECTOR);
     }
     if (typeof value === "object") {
       return Object.values(value as Record<string, unknown>).some(visit);
     }
     return false;
   };
-  return visit(error) || containsText(errorText(error));
+  return visit(error);
 }
 
-function containsText(value: string): boolean {
-  return value.includes("NoFeesToCollect") || value.includes(NO_FEES_SELECTOR);
-}
-
-function decisionView(action: Record<string, unknown>, quoteOut?: bigint): DecisionView {
+function decisionView(
+  action: Record<string, unknown>,
+  quoteOut?: bigint
+): DecisionView {
   const result: DecisionView = {
     kind: action.kind as DecisionView["kind"],
     reason: String(action.reason ?? "")
   };
-  if (typeof action.amount === "bigint") result.amount = action.amount.toString();
-  if (typeof action.score === "bigint") result.score = action.score.toString();
+  for (const field of [
+    "amount",
+    "amountToken",
+    "amountWeth",
+    "total",
+    "score"
+  ] as const) {
+    const value = action[field];
+    if (typeof value === "bigint" || typeof value === "string") {
+      result[field] = value.toString();
+    }
+  }
+  for (const field of [
+    "recipientCount",
+    "snapshotBlock",
+    "tickLower",
+    "tickUpper"
+  ] as const) {
+    const value = action[field];
+    if (typeof value === "number") result[field] = value;
+  }
   if (quoteOut !== undefined) result.quoteOut = quoteOut.toString();
   return result;
 }
@@ -116,7 +204,9 @@ async function claimPreview(
 ): Promise<Snapshot["claim"]> {
   const locker: any = new Contract(lockerAddress, CLAIM_ABI, provider);
   try {
-    const result = await locker.collectFees.staticCall(token, { from: recipient });
+    const result = await locker.collectFees.staticCall(token, {
+      from: recipient
+    });
     const amount0 = result[0] as bigint;
     const amount1 = result[1] as bigint;
     return {
@@ -135,7 +225,33 @@ async function claimPreview(
 
 function agentOnline(state: AgentState): boolean {
   if (!state.lastTimestamp) return false;
-  return Math.abs(Date.now() / 1_000 - state.lastTimestamp) < 30 * 60;
+  const recentlyObserved =
+    Math.abs(Date.now() / 1_000 - state.lastTimestamp) < 30 * 60;
+  const schedulePlausible =
+    state.nextRunAt === 0 || state.nextRunAt > Date.now() - 5 * 60_000;
+  return recentlyObserved && schedulePlausible;
+}
+
+function trackedHolderCount(index?: HolderIndex): number {
+  if (!index) return 0;
+  return Object.values(index.balances).filter((value) => BigInt(value) > 0n)
+    .length;
+}
+
+function airdropStage(
+  plan?: AirdropPlan
+): Snapshot["operations"]["airdrop"]["stage"] {
+  if (!plan) return "none";
+  if (plan.recipients.some((recipient) => recipient.status === "failed")) {
+    return "failed";
+  }
+  if (plan.recipients.length === 0) return "committed";
+  if (
+    plan.recipients.every((recipient) => recipient.status === "confirmed")
+  ) {
+    return "confirmed";
+  }
+  return "paying";
 }
 
 export class Observer {
@@ -179,9 +295,15 @@ export class Observer {
         state: AgentState,
         weth: bigint,
         token: bigint,
-        tokenIs0: boolean
+        tokenIs0: boolean,
+        availability: {
+          holderCount: number;
+          holderIndexComplete: boolean;
+        }
       ) => Record<string, unknown>;
-      const initialState = math.initialState as unknown as () => AgentState;
+      const initialState = math.initialState as unknown as (
+        token: string
+      ) => AgentState;
       const valueTokenInWeth = math.valueTokenInWeth as unknown as (
         amount: bigint,
         sqrt: bigint,
@@ -190,7 +312,10 @@ export class Observer {
 
       const context = await discover(config.rpc, config.token);
       const provider = context.provider as JsonRpcProvider;
-      const state = await readState(initialState);
+      const [state, sidecars] = await Promise.all([
+        readState(initialState),
+        readSidecars()
+      ]);
       const [observation, treasury, block, nativeBalance] = await Promise.all([
         observe(context, state.lastBlock + 1),
         balances(context),
@@ -207,17 +332,37 @@ export class Observer {
         tokenContract.totalSupply() as Promise<bigint>
       ]);
       const decimals = Number(decimalsRaw);
-      const action = decide(
+      const holderTarget = Math.max(
+        (sidecars.holderIndex?.launchBlock ?? 1) - 1,
+        (observation.block as number) - 12
+      );
+      const holderCount = trackedHolderCount(sidecars.holderIndex);
+      const holderComplete =
+        (sidecars.holderIndex?.completeThrough ?? 0) >= holderTarget;
+      const computedAction = decide(
         observation,
         state,
         treasury.weth,
         treasury.token,
-        context.tokenIs0 as boolean
+        context.tokenIs0 as boolean,
+        {
+          holderCount,
+          holderIndexComplete: holderComplete && holderCount > 0
+        }
       );
+      const action =
+        sidecars.cycle?.action &&
+        sidecars.cycle.cycleId === state.activeCycleId
+          ? sidecars.cycle.action
+          : computedAction;
       let quoteOut: bigint | undefined;
       if (action.kind === "buy" || action.kind === "sell") {
         try {
-          quoteOut = await quote(context, action);
+          const quoteAction = {
+            ...action,
+            amount: BigInt(String(action.amount))
+          };
+          quoteOut = await quote(context, quoteAction);
         } catch {
           quoteOut = undefined;
         }
@@ -242,6 +387,10 @@ export class Observer {
         context.recipient as string,
         context.tokenIs0 as boolean
       );
+      const confirmedRecipients =
+        sidecars.airdrop?.recipients.filter(
+          (recipient) => recipient.status === "confirmed"
+        ).length ?? 0;
 
       const unsigned = {
         capturedAt: new Date().toISOString(),
@@ -276,9 +425,40 @@ export class Observer {
           online: agentOnline(state),
           stateBlock: state.lastBlock,
           stateTimestamp: state.lastTimestamp,
-          lastActionAt: state.lastActionAt
+          lastActionAt: state.lastActionAt,
+          nextRunAt: state.nextRunAt,
+          cycleSeq: state.cycleSeq,
+          activeCycleId: state.activeCycleId
+        },
+        operations: {
+          holderIndex: {
+            cursor: sidecars.holderIndex?.cursor ?? 0,
+            target: holderTarget,
+            trackedAddresses: holderCount,
+            complete: holderComplete
+          },
+          cycle: {
+            id: sidecars.cycle?.cycleId,
+            stage: sidecars.cycle?.stage ?? "none",
+            updatedAt: sidecars.cycle?.updatedAt
+          },
+          lp: {
+            cycleId: sidecars.lp?.cycleId,
+            stage: sidecars.lp?.stage ?? "none",
+            tokenId: sidecars.lp?.tokenId
+          },
+          airdrop: {
+            cycleId: sidecars.airdrop?.cycleId,
+            stage: airdropStage(sidecars.airdrop),
+            totalWeth: sidecars.airdrop?.totalWeth,
+            recipientCount:
+              sidecars.airdrop?.recipientCount ??
+              sidecars.airdrop?.recipients.length ??
+              0,
+            confirmedCount: confirmedRecipients
+          }
         }
-      };
+      } satisfies Omit<Snapshot, "proofHash" | "id">;
       const snapshot: Snapshot = {
         ...unsigned,
         proofHash: hashProof(unsigned)
@@ -323,10 +503,17 @@ export class Observer {
 
     const feeInterface = new Interface(CLAIM_ABI);
     const poolInterface = new Interface(POOL_ABI);
+    const tokenInterface = new Interface(TOKEN_ABI);
     const feeTopic = feeInterface.getEvent("FeesClaimed")!.topicHash;
     const swapTopic = poolInterface.getEvent("Swap")!.topicHash;
+    const transferTopic = tokenInterface.getEvent("Transfer")!.topicHash;
     const tokenTopic = zeroPadValue(getAddress(config.token), 32);
-    const [feeLogs, swapLogs] = await Promise.all([
+    const recipientTopic = zeroPadValue(
+      getAddress(context.recipient as string),
+      32
+    );
+    const burnTopic = zeroPadValue(getAddress(constants.BURN as string), 32);
+    const [feeLogs, swapLogs, burnLogs] = await Promise.all([
       provider.getLogs({
         address: constants.LOCKER as string,
         fromBlock,
@@ -338,6 +525,12 @@ export class Observer {
         fromBlock,
         toBlock: latest,
         topics: [swapTopic]
+      }),
+      provider.getLogs({
+        address: config.token,
+        fromBlock,
+        toBlock: latest,
+        topics: [transferTopic, recipientTopic, burnTopic]
       })
     ]);
 
@@ -368,7 +561,10 @@ export class Observer {
     for (const log of swapLogs) {
       const event = poolInterface.parseLog(log);
       if (!event) continue;
-      if (getAddress(event.args.recipient as string) !== getAddress(context.recipient as string)) {
+      if (
+        getAddress(event.args.recipient as string) !==
+        getAddress(context.recipient as string)
+      ) {
         continue;
       }
       const amount0 = event.args.amount0 as bigint;
@@ -400,6 +596,21 @@ export class Observer {
             assetOut: "WETH"
           };
       this.store.saveActivity(activity);
+    }
+
+    for (const log of burnLogs) {
+      const event = tokenInterface.parseLog(log);
+      if (!event) continue;
+      this.store.saveActivity({
+        kind: "burn",
+        status: "confirmed",
+        timestamp: new Date().toISOString(),
+        block: log.blockNumber,
+        txHash: log.transactionHash,
+        amountIn: (event.args.value as bigint).toString(),
+        assetIn: "TOKEN",
+        assetOut: "BURN_ADDRESS"
+      });
     }
 
     this.store.setMeta("activity_cursor", String(latest));

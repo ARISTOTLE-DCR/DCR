@@ -1,7 +1,20 @@
 export interface Decision {
-  kind: "buy" | "sell" | "burn" | "hold";
+  kind:
+    | "buy"
+    | "sell"
+    | "burn"
+    | "permanent_lp"
+    | "weth_airdrop"
+    | "hold";
   reason: string;
   amount?: string;
+  amountToken?: string;
+  amountWeth?: string;
+  total?: string;
+  recipientCount?: number;
+  snapshotBlock?: number;
+  tickLower?: number;
+  tickUpper?: number;
   score?: string;
   quoteOut?: string;
 }
@@ -44,6 +57,41 @@ export interface Snapshot {
     stateBlock: number;
     stateTimestamp: number;
     lastActionAt: number;
+    nextRunAt: number;
+    cycleSeq: number;
+    activeCycleId?: string | undefined;
+  };
+  operations: {
+    holderIndex: {
+      cursor: number;
+      target: number;
+      trackedAddresses: number;
+      complete: boolean;
+    };
+    cycle: {
+      id?: string | undefined;
+      stage: "none" | "planned" | "executing" | "confirmed" | "failed";
+      updatedAt?: number | undefined;
+    };
+    lp: {
+      cycleId?: string | undefined;
+      stage:
+        | "none"
+        | "planned"
+        | "mint_prepared"
+        | "minted"
+        | "lock_prepared"
+        | "locked"
+        | "failed";
+      tokenId?: string | undefined;
+    };
+    airdrop: {
+      cycleId?: string | undefined;
+      stage: "none" | "committed" | "paying" | "confirmed" | "failed";
+      totalWeth?: string | undefined;
+      recipientCount: number;
+      confirmedCount: number;
+    };
   };
   proofHash: string;
 }
@@ -54,11 +102,22 @@ export interface Provenance {
   archiveSha256: string;
   sourceSha256: string;
   sourceUnmodified: boolean;
+  archiveVerified: boolean;
+  productionHardened: boolean;
   checkedAt: string;
 }
 
 export interface Activity {
-  kind: "buy" | "sell" | "burn" | "hold" | "claim" | "decision" | "agent";
+  kind:
+    | "buy"
+    | "sell"
+    | "burn"
+    | "permanent_lp"
+    | "weth_airdrop"
+    | "hold"
+    | "claim"
+    | "decision"
+    | "agent";
   status: "observed" | "confirmed" | "failed" | "skipped";
   timestamp: string;
   block?: number;

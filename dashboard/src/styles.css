@@ -246,6 +246,15 @@ h1 {
   color: var(--signal-red);
 }
 
+.data-point dd.signal-burn {
+  color: var(--signal-red);
+}
+
+.data-point dd.signal-permanent_lp,
+.data-point dd.signal-weth_airdrop {
+  color: var(--signal-green);
+}
+
 .data-point dd.small-value {
   font-size: 0.75rem;
 }

@@ -11,9 +11,7 @@ import {
   decide,
   initialState,
 } from "../aristotle-output/input_aristotle/dist/math.js";
-import {
-  ABIS,
-} from "../aristotle-output/input_aristotle/dist/constants.js";
+import { ABIS } from "../aristotle-output/input_aristotle/dist/constants.js";
 
 const RPC = "http://127.0.0.1:18547";
 const TOKEN = "0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a";

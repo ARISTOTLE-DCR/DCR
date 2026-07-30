@@ -210,7 +210,7 @@ it:
 
 - Token: `0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a`
 - Expected launch deployer:
-  `0x68379906988495826B2521305E0E4de8FF5A8911`
+  `0xFe884239Ab22cA90BB86a33120aD932bd52339F1`
 - Expected canonical pool:
   `0xB7a165b96D8f6dD131B2ea5B5Df7ad9E46507426`
 

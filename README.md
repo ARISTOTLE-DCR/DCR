@@ -1,383 +1,153 @@
-# DCR
+# Discrete Curvature Reservoir
 
-ca - 0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a 
+DCR is an autonomous creator-fee controller for a PONS token on Robinhood
+Chain (chain ID `4663`). Aristotle generated the v2 mathematical strategy and
+complete TypeScript implementation. The production copy adds narrowly scoped
+execution/restart hardening, while `aristotle-result.tar.gz` preserves the
+original Aristotle result byte-for-byte.
 
-Discrete Curvature Reservoir is an experimental creator-fee controller and
-public transparency dashboard for a token launched through PONS on Robinhood
-Chain.
-
-The repository contains:
-
-- the original, unmodified Aristotle-generated TypeScript controller;
-- the machine-checked Lean model supplied with that controller;
-- a read-only observer and HTTP/SSE API;
-- a responsive public dashboard with live chain state, agent events, proofs,
-  formulas, and explorer links;
-- fork-based transaction-path tests;
-- the immutable Aristotle result archive exposed by the dashboard.
-
-> This is experimental financial software. Read
-> [Operational safety](#operational-safety) before enabling signing.
+The public observer and dashboard expose balances, decisions, receipts,
+holder-index progress, LP-lock state, airdrop state, timers, source hashes and
+the mathematical specification without access to the signing key.
 
 ## Strategy
 
-DCR treats the fee-recipient wallet's WETH and launched-token balances as two
-reservoirs. It observes local price displacement, recent WETH swap flow, and
-pool liquidity. It then chooses a countercyclical `BUY`, `SELL`, or `HOLD`.
-
-Let:
-
-- `s_n` be the current V3 `sqrtPriceX96`;
-- `L_n` be current pool liquidity;
-- `V_n` be observed absolute WETH swap flow;
-- `R^W_n` and `R^T_n` be the wallet's WETH and token balances.
-
-The signed displacement is:
+For V3 `sqrtPriceX96 = s`, DCR computes the oriented displacement
 
 ```text
-r_n = 10^6 (s_n² - s_(n-1)²) / s_(n-1)²
+r = ±10⁶(s² − s_prev²) / s_prev²
 ```
 
-The flow pressure and adaptive dead zone are:
+and flow pressure / adaptive dead zone
 
 ```text
-q_n = 10^6 V_n / (L_n + 1)
-d_n = 1500 + min(q_n, 25000) / 5
+q = 10⁶ · recentWethFlow / (liquidity + 1)
+d = 1500 + min(q, 25000) / 5
 ```
 
-Excess curvature, cubic response energy, and spend fraction are:
+Swap size is derived from excess curvature:
 
 ```text
-e_n = max(|r_n| - d_n, 0)
-C_n = e_n³ / (d_n² + 1)
-f_n = clamp(C_n / 200, 25, 1250) / 10000
+e = max(|r| − d, 0)
+C = e³ / (d² + 1)
+f = clamp(C / 200, 25, 1250) / 10000
 ```
 
-The action follows directly:
+The deterministic policy is:
 
-- `|r_n| <= d_n`: hold;
-- `r_n < -d_n`: spend `f_n R^W_n` WETH to buy the token;
-- `r_n > d_n`: sell `f_n R^T_n` tokens into WETH.
+- `BUY` when `r < -d`, spending `0.25%–12.5%` of WETH.
+- `SELL` only when `r > 4d` **and** token inventory value is more than twice
+  WETH, selling `0.25%–12.5%` of token inventory.
+- In calm conditions (`|r| ≤ d`):
+  - burn `6.25%` of tokens when token value is over twice WETH;
+  - allocate up to `10%` of each asset to a new V3 position when inventories
+    are balanced and flow is material, then transfer its NFT to `0x…dEaD`;
+  - distribute `6.25%` of WETH to 1–10 finalized indexed holders when WETH is
+    over twice token value.
+- Otherwise `HOLD`.
 
-When a trade signal exists, `f_n` is between `0.25%` and `12.5%`. The cap is
-per cycle and applies to the remaining balance of the asset being spent.
+Every cycle claims available creator fees first, then chooses one action. The
+next cycle time is randomly selected between 10 and 15 minutes and persisted
+before the economic action, so a restart does not reset the timer.
 
-The controller runs again after a randomized 10–15 minute sleep. The effective
-start-to-start interval is the cycle duration plus that sleep.
+## Safety model
 
-## Architecture
-
-```text
-Robinhood Chain
-      │
-      ├── original Aristotle agent ── signs claims/swaps
-      │             │
-      │             └── external log capture
-      │
-      └── read-only observer ── HTTP + SSE ── public dashboard
-```
-
-Trust boundaries:
-
-- `aristotle-output/input_aristotle/` is the signing controller.
-- `observer/` is read-only and must never receive the private key.
-- `dashboard/` talks only to the observer API.
-- On-chain receipts and emitted events are authoritative for claims and swaps.
-- `aristotle-result.tar.gz` is the fixed source archive offered by the
-  dashboard's verification link.
-
-The external agent runner records the original controller's events and adds a
-20% gas-limit buffer to RPC estimates; unused gas is not charged. If the router
-rejects a swap because its quote became stale or its first transaction reverted,
-the runner performs one immediate retry of the same Aristotle decision with a
-fresh quote. The retry does not change the action, amount, mathematical policy,
-or 0.75% slippage limit, and its result is written to the same public execution
-log.
+- Dry-run is the default.
+- Live signing requires the key-derived address to exactly match the PONS fee
+  recipient.
+- Native ETH is gas only; strategy capital is WETH plus the launched token.
+- Swaps use fresh quotes, 0.75% minimum-output tolerance, simulation, a 20% gas
+  estimate buffer, exact approvals, receipt/balance reconciliation and at most
+  one fresh-quote retry.
+- Prepared transaction hash/raw bytes are persisted before broadcast.
+- Restarts recover the exact prepared transaction and refuse overlapping
+  cycles.
+- LP positions are verified against the canonical pair, pool fee, range,
+  liquidity and owner before permanent locking; the original launch position
+  is rejected.
+- Holder selection commits the finalized eligible set before future-block
+  randomness is available. Payouts are unique, persisted and reconciled
+  individually.
 
 ## Repository layout
 
 ```text
-aristotle-output/input_aristotle/  Original Aristotle controller and Lean proof
-dashboard/                         React/Vite public dashboard
-observer/                          Read-only observer, API, SSE and log capture
-fork-tests/                        Robinhood Chain fork execution checks
-input/                             Original prompt and neutral PONS reference
-aristotle-result.tar.gz            Immutable Aristotle result archive
+aristotle-output/input_aristotle/  production agent source
+aristotle-result.tar.gz            original Aristotle v2 result
+fork-tests/                        Robinhood fork integration tests
+observer/                          read-only API, SSE and agent log capture
+dashboard/                         public React dashboard
+deploy/                            systemd, Nginx and activation scripts
 ```
 
-## Requirements
+## Local verification
 
-- Node.js `22.5+`
-- npm
-- Lean toolchain from `lean-toolchain` only if rebuilding the formal proof
-- Access to a Robinhood Chain RPC endpoint
+Requires Node.js 22+.
 
-## Install and build
-
-Build the unchanged agent:
-
-```sh
+```bash
 cd aristotle-output/input_aristotle
 npm ci
 npm run typecheck
 npm test
 npm run build
-```
 
-Build the dashboard:
+cd ../../observer
+npm ci
+npm run typecheck
+npm run build
 
-```sh
-cd dashboard
+cd ../dashboard
 npm ci
 npm run typecheck
 npm run build
 ```
 
-Build the observer:
+Fork integration tests require a local Anvil fork on port `18547` and use no
+mainnet signing:
 
-```sh
-cd observer
-npm ci
-npm run typecheck
-npm run build
+```bash
+node fork-tests/fork-positive.mjs
+node fork-tests/fork-policy-e2e.mjs
+node fork-tests/fork-policy-rise-e2e.mjs
+node fork-tests/fork-v2-lp-airdrop.mjs
 ```
 
 ## Configuration
 
-There are three separate environment files. Never commit any of them.
-
-### 1. Signing agent
-
-Create `aristotle-output/input_aristotle/.env` from its `.env.example`:
-
-```env
-TOKEN_ADDRESS=0x_your_launched_token
-CREATOR_PRIVATE_KEY=your_fee_recipient_private_key
-RPC_URL=https://rpc.mainnet.chain.robinhood.com
-SIGNING_ENABLED=false
-STATE_FILE=./data/dcr-production.json
-```
-
-Use a fresh, token-specific `STATE_FILE`. Do not reuse a state file created for
-another token: the previous `sqrtPriceX96` baseline would be invalid.
-
-Keep `SIGNING_ENABLED=false` for the first inspection. The signer must exactly
-match the PONS-resolved fee recipient or execution is refused.
-
-### 2. Read-only observer
-
-Create `observer/.env` from its `.env.example`:
-
-```env
-TOKEN_ADDRESS=0x_your_launched_token
-RPC_URL=https://rpc.mainnet.chain.robinhood.com
-OBSERVER_PORT=4174
-OBSERVER_HOST=127.0.0.1
-OBSERVER_POLL_MS=15000
-AGENT_ROOT=../aristotle-output/input_aristotle
-AGENT_STATE_FILE=../aristotle-output/input_aristotle/data/dcr-production.json
-ARISTOTLE_ARCHIVE=../aristotle-result.tar.gz
-OBSERVER_DATA_DIR=./data
-```
-
-The observer must use the same token and state path as the agent. Never put
-`CREATOR_PRIVATE_KEY` in this file.
-
-### 3. Dashboard
-
-Create `dashboard/.env` from its `.env.example` before building:
-
-```env
-VITE_TWITTER_URL=https://x.com/discreteonrh
-VITE_TOKEN_TICKER=DCR
-```
-
-Vite embeds these values at build time, so rebuild the dashboard after changing
-them.
-
-## First dry run
-
-With `SIGNING_ENABLED=false`:
-
-```sh
-cd aristotle-output/input_aristotle
-npm run inspect
-```
-
-Confirm:
-
-- chain ID is `4663`;
-- token, canonical pool, paired WETH, deployer, and fee recipient are correct;
-- the first observation holds and establishes a new baseline;
-- wallet balances and claim simulation are plausible;
-- no transaction is sent.
-
-Only after verifying the inspection should an operator deliberately change
-`SIGNING_ENABLED=true`.
-
-## Run
-
-Terminal or service 1 — observer, API, SSE, and built website:
-
-```sh
-cd observer
-npm start
-```
-
-Terminal or service 2 — original agent with external log capture:
-
-```sh
-cd observer
-npm run agent
-```
-
-Open `http://127.0.0.1:4174`.
-
-Running the agent directly from its own directory still performs the strategy,
-but the dashboard will not receive exact off-chain hold decisions or scheduler
-events.
-
-## Server deployment
-
-1. Build all three packages as shown above.
-2. Keep the agent and observer as two separately supervised long-running
-   processes.
-3. Keep `OBSERVER_HOST=127.0.0.1`.
-4. Put a TLS reverse proxy such as Caddy or Nginx in front of port `4174`.
-5. Expose only the observer HTTP port.
-6. Never serve the agent directory, `.env` files, runtime `data/`, or private
-   key as static content.
-7. Back up the agent state and transaction-monitoring records before upgrades.
-
-The production server installation exposes a root-only activation command:
-
-```sh
-activate <PONS_TOKEN_ADDRESS>
-```
-
-It validates chain `4663`, the PONS launch record, canonical pool, paired WETH,
-and the resolved creator-fee recipient before changing the active token.
-Signing is enabled only when the protected server key is exactly that
-fee-recipient wallet. The command then assigns token-specific state/history
-paths, starts the agent, waits for its first state, starts the observer, and
-verifies that the public API is serving the requested token.
-
-For a read-only preview of any valid PONS token:
-
-```sh
-activate --dry-run <PONS_TOKEN_ADDRESS>
-```
-
-The preview form never places the private key in the agent environment and
-forces `SIGNING_ENABLED=false`.
-
-The observer serves the compiled dashboard automatically when
-`dashboard/dist/` exists.
-
-## Dashboard behavior
-
-The public site provides:
-
-- the latest Robinhood Chain head;
-- token price, market cap, observed WETH flow, and reserve balances;
-- claim simulation status;
-- current DCR decision;
-- live observer and agent events over SSE;
-- data-refresh progress and the real next-cycle countdown;
-- Blockscout links;
-- a detailed strategy explainer with formulas;
-- archive and source SHA-256 verification.
-
-`OBSERVED FLOW` is absolute WETH swap flow in the bounded observation window,
-not a 24-hour or net directional volume.
-
-`CREATOR FEE STATUS` is a read-only claim simulation:
-
-- `CLAIMABLE`: fees can currently be claimed;
-- `EMPTY`: the locker reports no fees to collect;
-- `UNAVAILABLE`: the simulation or RPC request failed.
-
-## Operational safety
-
-The transaction paths for claim, buy, sell, and burn were exercised on an
-Anvil fork of the real Robinhood Chain deployment. Both complete policy
-directions were verified:
-
-```text
-pool movement -> observation -> DCR decision -> quote -> approval ->
-router transaction -> receipt -> balance reconciliation
-```
-
-Important limitations remain:
-
-1. **Use a dedicated fee wallet.** The policy reads the wallet's entire WETH and
-   launched-token balances. It cannot distinguish claimed fees from unrelated
-   assets manually sent to the same address.
-2. **The 12.5% cap is per cycle.** Repeated same-direction signals can convert
-   most of one reservoir over time.
-3. **Native ETH is gas only.** The strategy trades WETH, not native ETH, but it
-   does not enforce a minimum ETH gas reserve.
-4. **Pending transactions are not durably recovered after a process crash.**
-   If the process stops after submission but before receipt handling completes,
-   the next process has no persisted transaction intent, hash, or nonce. This
-   is the primary blocker for unattended control of significant funds.
-5. **Empty claims are misclassified in the original agent.** PONS currently
-   uses `NoFeesToCollect()` selector `0x6a4ea9e4`, while the unmodified agent
-   checks a different selector. The scheduler continues and trading is not
-   blocked, but its claim log can show `failed` instead of `empty`.
-6. **Claim receipts are not balance-reconciled by the original agent.** The
-   fork audit independently confirmed correct claim deltas, but the live agent
-   only checks receipt success for claims.
-
-Use dry-run or closely supervised, limited-value operation unless these risks
-are accepted and separately mitigated.
-
-## Verification
-
 Agent:
 
-```sh
-cd aristotle-output/input_aristotle
-npm run typecheck
-npm test
-npm run build
+```dotenv
+TOKEN_ADDRESS=0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a
+RPC_URL=https://your-robinhood-rpc
+SIGNING_ENABLED=false
+DATA_ROOT=./data
+TOKEN_LAUNCH_BLOCK=23534520
+# CREATOR_PRIVATE_KEY=never-commit-this
 ```
 
-Dashboard and observer:
+Observer never receives the private key. See `observer/.env.example`.
 
-```sh
-cd dashboard
-npm run typecheck
-npm run build
+## Server activation
 
-cd ../observer
-npm run typecheck
-npm run build
+The installed command validates the canonical PONS pool, resolves the exact
+deployment block and confirms fee-recipient ownership before enabling signing:
+
+```bash
+activate 0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a
 ```
 
-Lean:
+Read-only mode:
 
-```sh
-cd aristotle-output/input_aristotle
-lake build
+```bash
+activate --dry-run 0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a
 ```
-
-The supplied deterministic tests, TypeScript builds, Lean proof, read-only
-chain inspection, and external fork transaction scenarios have passed.
 
 ## Provenance
 
-- Aristotle project: `5999f818-6116-43e6-8a4e-af4e0b5c35c8`
-- Aristotle task: `cf26e10a-a7d1-41be-a1db-9c3eed226b85`
-- Archive SHA-256:
-  `a970ea9f9cf477e9380ca17b8f218d770e5f9866a807815ce4fb7799ced6974c`
-- Immutable source SHA-256:
-  `21c9137399f51c1205a269b5e24b48a67b89eb0bb2745d792d70b362ffc685d2`
+- Aristotle project: `450de4b7-0ce3-461d-bf4e-ff07458ae998`
+- Aristotle task: `a465e2f3-38d2-4387-897a-b1a45006b302`
+- Original archive SHA-256:
+  `0327594738a72fe1a97ffac6dbb012196097d8d8962c4677dd33738e265fc6c0`
 
-The observer recalculates both hashes at startup. The dashboard reports whether
-the extracted Aristotle source still matches the archived result.
-
-## License
-
-No license has been granted. The repository is private unless the owner
-explicitly changes its visibility.
+Production hardening is intentionally reported separately from the immutable
+archive instead of claiming that the runtime source is byte-identical.

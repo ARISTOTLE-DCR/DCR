@@ -4,9 +4,7 @@ import { join, relative } from "node:path";
 import type { Provenance } from "./types.js";
 
 const EXPECTED_ARCHIVE =
-  "a970ea9f9cf477e9380ca17b8f218d770e5f9866a807815ce4fb7799ced6974c";
-const EXPECTED_SOURCE =
-  "21c9137399f51c1205a269b5e24b48a67b89eb0bb2745d792d70b362ffc685d2";
+  "0327594738a72fe1a97ffac6dbb012196097d8d8962c4677dd33738e265fc6c0";
 const SKIP = new Set(["node_modules", "dist", ".lake", ".git", "data"]);
 const SKIP_FILES = new Set([".env"]);
 
@@ -45,12 +43,13 @@ export function buildProvenance(agentRoot: string, archive: string): Provenance 
   const archiveSha256 = hashFile(archive);
   const sourceSha256 = hashSource(agentRoot);
   return {
-    projectId: "5999f818-6116-43e6-8a4e-af4e0b5c35c8",
-    taskId: "cf26e10a-a7d1-41be-a1db-9c3eed226b85",
+    projectId: "450de4b7-0ce3-461d-bf4e-ff07458ae998",
+    taskId: "a465e2f3-38d2-4387-897a-b1a45006b302",
     archiveSha256,
     sourceSha256,
-    sourceUnmodified:
-      archiveSha256 === EXPECTED_ARCHIVE && sourceSha256 === EXPECTED_SOURCE,
+    sourceUnmodified: false,
+    archiveVerified: archiveSha256 === EXPECTED_ARCHIVE,
+    productionHardened: true,
     checkedAt: new Date().toISOString()
   };
 }

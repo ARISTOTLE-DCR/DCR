@@ -1,5 +1,8 @@
 import { createRequire } from "node:module";
-import { discover } from "../aristotle-output/input_aristotle/dist/chain.js";
+import {
+  discover,
+  findDeploymentBlock
+} from "../aristotle-output/input_aristotle/dist/chain.js";
 
 const requireFromAgent = createRequire(
   new URL("../aristotle-output/input_aristotle/package.json", import.meta.url)
@@ -39,7 +42,11 @@ try {
     ],
     context.provider
   );
-  const [name, symbol] = await Promise.all([token.name(), token.symbol()]);
+  const [name, symbol, deploymentBlock] = await Promise.all([
+    token.name(),
+    token.symbol(),
+    findDeploymentBlock(context.provider, context.token)
+  ]);
   console.log(JSON.stringify({
     chainId: 4663,
     token: context.token,
@@ -50,6 +57,7 @@ try {
     feeRecipient: recipient,
     signer,
     signingAuthorized: signer === recipient,
+    deploymentBlock,
     mode
   }));
 } catch (error) {

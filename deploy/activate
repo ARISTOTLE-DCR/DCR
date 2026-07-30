@@ -67,10 +67,12 @@ TOKEN_SYMBOL="$(jq -r '.symbol' <<<"$VALIDATION_JSON")"
 POOL_ADDRESS="$(jq -r '.pool' <<<"$VALIDATION_JSON")"
 FEE_RECIPIENT="$(jq -r '.feeRecipient' <<<"$VALIDATION_JSON")"
 SIGNER_ADDRESS="$(jq -r '.signer' <<<"$VALIDATION_JSON")"
+DEPLOYMENT_BLOCK="$(jq -r '.deploymentBlock' <<<"$VALIDATION_JSON")"
 
 TOKEN_SLUG="$(tr '[:upper:]' '[:lower:]' <<<"${CANONICAL_TOKEN#0x}")"
-STATE_FILE="./data/dcr-${TOKEN_SLUG}.json"
-OBSERVER_STATE_FILE="../aristotle-output/input_aristotle/data/dcr-${TOKEN_SLUG}.json"
+TOKEN_DATA_DIR="${AGENT_ROOT}/data/${TOKEN_SLUG}"
+STATE_ABSOLUTE="${TOKEN_DATA_DIR}/state.json"
+OBSERVER_STATE_FILE="../aristotle-output/input_aristotle/data/${TOKEN_SLUG}/state.json"
 OBSERVER_DATA_DIR="./data/${TOKEN_SLUG}"
 SIGNING_ENABLED="true"
 AGENT_PRIVATE_KEY="$CREATOR_PRIVATE_KEY"
@@ -80,7 +82,8 @@ if [[ "$MODE" == "dry-run" ]]; then
 fi
 
 install -d -o dcragent -g dcrstate -m 2750 \
-  "${AGENT_ROOT}/data"
+  "${AGENT_ROOT}/data" \
+  "${TOKEN_DATA_DIR}"
 install -d -o dcrobserver -g dcrlogs -m 2770 \
   "${OBSERVER_ROOT}/data" \
   "${OBSERVER_ROOT}/data/${TOKEN_SLUG}"
@@ -97,7 +100,8 @@ TOKEN_ADDRESS=${CANONICAL_TOKEN}
 CREATOR_PRIVATE_KEY=${AGENT_PRIVATE_KEY}
 RPC_URL=${RPC_URL}
 SIGNING_ENABLED=${SIGNING_ENABLED}
-STATE_FILE=${STATE_FILE}
+DATA_ROOT=./data
+TOKEN_LAUNCH_BLOCK=${DEPLOYMENT_BLOCK}
 EOF
 
 cat >"$OBSERVER_ENV_TMP" <<EOF
@@ -119,10 +123,32 @@ mv -f "$AGENT_ENV_TMP" "${AGENT_ROOT}/.env"
 mv -f "$OBSERVER_ENV_TMP" "${OBSERVER_ROOT}/.env"
 trap - EXIT
 
+LEGACY_STATE="${AGENT_ROOT}/data/dcr-${TOKEN_SLUG}.json"
+if [[ ! -s "$STATE_ABSOLUTE" && -s "$LEGACY_STATE" ]]; then
+  NEXT_RUN_AT="0"
+  AGENT_EVENTS="${OBSERVER_ROOT}/data/${TOKEN_SLUG}/agent-events.jsonl"
+  if [[ -s "$AGENT_EVENTS" ]]; then
+    NEXT_RUN_ISO="$(
+      jq -r 'select(.eventType == "schedule") | .payload.nextRunAt // empty' \
+        "$AGENT_EVENTS" 2>/dev/null | tail -n 1
+    )"
+    if [[ -n "$NEXT_RUN_ISO" ]]; then
+      NEXT_RUN_AT="$(
+        /usr/bin/node -e \
+          'const n=Date.parse(process.argv[1]); process.stdout.write(Number.isFinite(n) ? String(n) : "0")' \
+          "$NEXT_RUN_ISO"
+      )"
+    fi
+  fi
+  echo "Migrating the existing DCR v1 state without resetting its timer..."
+  runuser -u dcragent -- \
+    /usr/bin/node "${AGENT_ROOT}/migrate-v1.mjs" \
+      "$LEGACY_STATE" "$STATE_ABSOLUTE" "$CANONICAL_TOKEN" "$NEXT_RUN_AT"
+fi
+
 echo "Starting DCR agent (${MODE})..."
 systemctl restart dcr-agent.service
 
-STATE_ABSOLUTE="${AGENT_ROOT}/data/dcr-${TOKEN_SLUG}.json"
 STATE_READY="false"
 for _ in $(seq 1 90); do
   if [[ -s "$STATE_ABSOLUTE" ]] &&
@@ -175,6 +201,7 @@ echo "  token:         ${CANONICAL_TOKEN} (${TOKEN_SYMBOL})"
 echo "  pool:          ${POOL_ADDRESS}"
 echo "  fee recipient: ${FEE_RECIPIENT}"
 echo "  signer:        ${SIGNER_ADDRESS}"
+echo "  launch block:  ${DEPLOYMENT_BLOCK}"
 echo "  dashboard:     https://dcr-rh.tech"
 if [[ "$MODE" == "dry-run" ]]; then
   echo "  transactions:  disabled"

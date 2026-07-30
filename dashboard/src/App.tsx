@@ -94,6 +94,12 @@ function nextStrategyCycle(events: AgentEvent[]): number | null {
   return null;
 }
 
+function decisionLabel(kind: Snapshot["decision"]["kind"]): string {
+  if (kind === "permanent_lp") return "LOCK LP";
+  if (kind === "weth_airdrop") return "AIRDROP";
+  return kind.toUpperCase();
+}
+
 function terminalLines(
   snapshot: Snapshot,
   provenance: Provenance,
@@ -135,14 +141,23 @@ function terminalLines(
           ? clockTime(nextRunAt).replaceAll(":", "")
           : "QUEUED"
       });
-    } else if (event.eventType === "execution" || event.eventType === "collection") {
+    } else if (
+      event.eventType === "execution" ||
+      event.eventType === "collection" ||
+      event.eventType === "lp-recovery" ||
+      event.eventType === "airdrop-recovery"
+    ) {
       lines.push({
         timestamp: event.timestamp,
         action: `${event.eventType.toUpperCase()}_${String(payload.status ?? "OBSERVED").toUpperCase()}`,
         hash: payload.txHash ? short(payload.txHash, 4, 4).replace("…", "") : "LOCAL",
         critical: payload.status === "failed"
       });
-    } else if (event.eventType === "stderr" || event.eventType === "observer-error") {
+    } else if (
+      event.eventType === "stderr" ||
+      event.eventType === "warning" ||
+      event.eventType === "observer-error"
+    ) {
       lines.push({
         timestamp: event.timestamp,
         action: `WARN_${event.eventType.toUpperCase()}`,
@@ -259,11 +274,14 @@ export function App() {
 
   if (!snapshot || !provenance) return <Loading />;
 
-  const decision = snapshot.decision.kind.toUpperCase();
+  const decision = decisionLabel(snapshot.decision.kind);
   const refreshElapsed = Math.max(0, now - lastRefreshAt);
   const refreshRemaining = Math.max(0, pollIntervalMs - refreshElapsed);
   const refreshProgress = Math.min(100, (refreshElapsed / pollIntervalMs) * 100);
-  const nextCycleAt = nextStrategyCycle(events);
+  const nextCycleAt =
+    snapshot.agent.nextRunAt > 0
+      ? snapshot.agent.nextRunAt
+      : nextStrategyCycle(events);
   const nextCycleRemaining =
     nextCycleAt === null ? null : nextCycleAt - now;
   const nextCycleLabel = nextCycleRemaining === null
@@ -305,10 +323,10 @@ export function App() {
             Reservoir
           </h1>
           <div className="concept-desc">
-            DCR governs PONS creator fees with a deterministic countercyclical
-            rule. Price falls deploy WETH to buy the token; price rises sell
-            token inventory back into WETH. Every action is bounded to 12.5% of
-            the corresponding reserve.
+            DCR v2 governs PONS creator fees through a buy-biased solvency
+            cone. It buys drawdowns, sells only exceptional overextension, and
+            routes calm surplus into burns, permanently locked liquidity, or
+            transparent WETH distributions to holders.
           </div>
         </div>
 
@@ -340,15 +358,47 @@ export function App() {
               <dd>{compact(snapshot.treasury.tokenBalance)} {displayTicker}</dd>
             </div>
             <div className="data-point">
-              <dt className="text-micro">MARKET CAP / OBSERVED FLOW</dt>
+              <dt className="text-micro">MARKET CAP / RECENT WETH FLOW</dt>
               <dd>
                 {compact(snapshot.pool.marketCapWeth)} /{" "}
                 {compact(snapshot.pool.volumeWeth)} WETH
               </dd>
             </div>
             <div className="data-point">
-              <dt className="text-micro">CREATOR FEE STATUS</dt>
+              <dt className="text-micro">UNCLAIMED CREATOR FEES</dt>
               <dd>{snapshot.claim.status.toUpperCase()}</dd>
+            </div>
+            <div className="data-point">
+              <dt className="text-micro">CYCLE / EXECUTION STATE</dt>
+              <dd>
+                #{snapshot.agent.cycleSeq} /{" "}
+                {snapshot.operations.cycle.stage.toUpperCase()}
+              </dd>
+            </div>
+            <div className="data-point">
+              <dt className="text-micro">HOLDER INDEX</dt>
+              <dd>
+                {snapshot.operations.holderIndex.complete
+                  ? `READY / ${snapshot.operations.holderIndex.trackedAddresses}`
+                  : `SYNC ${snapshot.operations.holderIndex.cursor} → ${snapshot.operations.holderIndex.target}`}
+              </dd>
+            </div>
+            <div className="data-point">
+              <dt className="text-micro">PERMANENT LP</dt>
+              <dd>
+                {snapshot.operations.lp.stage.toUpperCase()}
+                {snapshot.operations.lp.tokenId
+                  ? ` / #${snapshot.operations.lp.tokenId}`
+                  : ""}
+              </dd>
+            </div>
+            <div className="data-point">
+              <dt className="text-micro">WETH AIRDROP</dt>
+              <dd>
+                {snapshot.operations.airdrop.stage.toUpperCase()} /{" "}
+                {snapshot.operations.airdrop.confirmedCount}/
+                {snapshot.operations.airdrop.recipientCount}
+              </dd>
             </div>
             <div className="data-point">
               <dt className="text-micro">RESERVE ADDRESS</dt>

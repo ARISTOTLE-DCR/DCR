@@ -34,4 +34,27 @@ theorem basis_point_spend_cap (r b : ℕ) (hb : b ≤ 1250) :
   have hprod : r * b ≤ r * 1250 := Nat.mul_le_mul_left r hb
   nlinarith
 
+/-- DCR v2's sell cone (`r > 4d`) lies inside the positive-curvature
+region (`r > d`) whenever the adaptive dead-zone is nonnegative. -/
+theorem sell_admissible_implies_positive (r d : ℝ) (hd : 0 ≤ d)
+    (hsell : 4 * d < r) : d < r := by
+  linarith
+
+/-- The containment is strict and meaningful for every positive dead-zone:
+`2d` is positive curvature beyond `d`, but is excluded by the `4d` sell gate. -/
+theorem sell_cone_strict (d : ℝ) (hd : 0 < d) :
+    d < 2 * d ∧ ¬ (4 * d < 2 * d) := by
+  constructor <;> linarith
+
+/-- A one-sixteenth irreversible allocation (burn or airdrop) obeys the
+one-eighth safety envelope. -/
+theorem sixteenth_allocation_safe (r : ℕ) :
+    8 * (r * 625 / 10000) ≤ r := by
+  exact basis_point_spend_cap r 625 (by omega)
+
+/-- A one-tenth permanent-LP allocation of either asset obeys the same cap. -/
+theorem tenth_allocation_safe (r : ℕ) :
+    8 * (r * 1000 / 10000) ≤ r := by
+  exact basis_point_spend_cap r 1000 (by omega)
+
 end CurvatureReservoir

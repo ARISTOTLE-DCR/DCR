@@ -72,7 +72,13 @@ async function refreshLiveBlock(): Promise<void> {
 }
 
 app.disable("x-powered-by");
-app.use(cors({ origin: true }));
+app.use(cors({ origin: false }));
+app.use((_request, response, next) => {
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.setHeader("X-Frame-Options", "DENY");
+  next();
+});
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_request, response) => {
@@ -168,7 +174,8 @@ const agentEventTimer = setInterval(refreshAgentEvents, 500);
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`PONS transparency observer: http://${config.host}:${config.port}`);
-  console.log(`Aristotle source unmodified: ${provenance.sourceUnmodified}`);
+  console.log(`Aristotle archive verified: ${provenance.archiveVerified}`);
+  console.log(`Production hardening active: ${provenance.productionHardened}`);
 });
 
 let shuttingDown = false;

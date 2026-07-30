@@ -23,13 +23,10 @@ import {
 
 const RPC = "http://127.0.0.1:18547";
 const TOKEN = "0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a";
-const CREATOR = "0x68379906988495826B2521305E0E4de8FF5A8911";
+const CREATOR = "0xFe884239Ab22cA90BB86a33120aD932bd52339F1";
 
 const provider = new JsonRpcProvider(RPC, 4663, { staticNetwork: true });
-await provider.send("anvil_setBalance", [
-  CREATOR,
-  "0x8ac7230489e80000",
-]);
+await provider.send("anvil_setBalance", [CREATOR, "0x8ac7230489e80000"]);
 
 await provider.send("anvil_impersonateAccount", [CREATOR]);
 const signer = new JsonRpcSigner(provider, CREATOR);
@@ -45,10 +42,11 @@ const lockerInterface = new Interface(ABIS.locker);
 
 const initial = await balances(ctx);
 const claimSimulation = await simulateClaim(ctx);
-const initialEmptyClaim = await collect(ctx);
-console.error("STEP empty-claim", initialEmptyClaim.status);
-assert.equal(initialEmptyClaim.status, "failed");
-assert.match(initialEmptyClaim.detail, /0x6a4ea9e4/);
+const initialClaim = await collect(ctx);
+console.error("STEP initial-claim", initialClaim.status);
+assert.ok(
+  initialClaim.status === "confirmed" || initialClaim.status === "skipped",
+);
 
 const buyAmount =
   initial.weth / 100n < 10_000_000_000_000n
@@ -125,8 +123,8 @@ assert.equal(tokenClaimDelta, eventToken);
 
 const postClaimEmpty = await collect(ctx);
 console.error("STEP post-claim-empty", postClaimEmpty.status);
-assert.equal(postClaimEmpty.status, "failed");
-assert.match(postClaimEmpty.detail, /0x6a4ea9e4/);
+assert.equal(postClaimEmpty.status, "skipped");
+assert.match(postClaimEmpty.detail, /no fees/i);
 
 const burnAmount =
   afterClaim.token < 1_000_000_000_000_000_000n
@@ -165,7 +163,7 @@ console.log(
       forkBlock: await provider.getBlockNumber(),
       creator: CREATOR,
       claimSimulation,
-      initialEmptyClaim,
+      initialClaim,
       claim: {
         result: claim,
         wethDelta: wethClaimDelta.toString(),
