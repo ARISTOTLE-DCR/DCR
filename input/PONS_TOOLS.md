@@ -208,7 +208,7 @@ This existing PONS launch can be used only to verify reads, pool discovery,
 quotes, fee-claim simulation, and dry-run behavior. Never send transactions for
 it:
 
-- Token: `0xbe284496abf795cb2ee007e947212343a7cf3c65`
+- Token: `0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a`
 - Expected launch deployer:
   `0x68379906988495826B2521305E0E4de8FF5A8911`
 - Expected canonical pool:

@@ -16,7 +16,7 @@ import {
 } from "../aristotle-output/input_aristotle/dist/constants.js";
 
 const RPC = "http://127.0.0.1:18547";
-const TOKEN = "0xbe284496abf795cb2ee007e947212343a7cf3c65";
+const TOKEN = "0x29b9e5306cbc8e0e8e4c1d63fc85a843303e0c7a";
 const PRE_SWAP_BLOCK = 22414286;
 const SWAP_BLOCK = 22414287;
 
