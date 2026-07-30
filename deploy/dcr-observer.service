@@ -12,6 +12,7 @@ WorkingDirectory=/opt/dcr/observer
 ExecStart=/usr/bin/node dist/server.js
 Restart=always
 RestartSec=5
+TimeoutStopSec=15
 Environment=NODE_ENV=production
 UMask=0027
 NoNewPrivileges=true

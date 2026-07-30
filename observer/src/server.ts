@@ -171,14 +171,24 @@ const server = app.listen(config.port, config.host, () => {
   console.log(`Aristotle source unmodified: ${provenance.sourceUnmodified}`);
 });
 
+let shuttingDown = false;
 const shutdown = (): void => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   observer.stop();
   clearInterval(headTimer);
   clearInterval(agentEventTimer);
   headProvider.destroy();
   for (const client of clients) client.end();
   clients.clear();
-  server.close(() => process.exit(0));
+  server.once("close", () => process.exit(0));
+  server.close();
+  server.closeIdleConnections();
+  const forceClose = setTimeout(() => {
+    server.closeAllConnections();
+    process.exit(0);
+  }, 5_000);
+  forceClose.unref();
 };
 
 process.on("SIGINT", shutdown);
