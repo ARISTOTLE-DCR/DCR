@@ -158,8 +158,8 @@ function terminalLines(
   });
 
   return lines
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-    .slice(-50);
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+    .slice(0, 50);
 }
 
 function Barcode() {
@@ -253,7 +253,7 @@ export function App() {
   );
 
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    if (logRef.current) logRef.current.scrollTop = 0;
   }, [logs]);
 
   if (!snapshot || !provenance) return <Loading />;
