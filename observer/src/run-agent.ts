@@ -18,6 +18,25 @@ const dataDir = resolve(
 loadEnv({ path: join(agentRoot, ".env"), override: true });
 Object.assign(process.env, inheritedEnvironment);
 
+type GasEstimatingProvider = {
+  estimateGas(transaction: unknown): Promise<bigint>;
+};
+
+const agentEthers = await import(
+  pathToFileURL(join(agentRoot, "node_modules/ethers/lib.esm/index.js")).href
+) as unknown as {
+  JsonRpcProvider: { prototype: GasEstimatingProvider };
+};
+const providerPrototype = agentEthers.JsonRpcProvider.prototype;
+const estimateGasWithoutBuffer = providerPrototype.estimateGas;
+providerPrototype.estimateGas = async function (
+  this: GasEstimatingProvider,
+  transaction: unknown
+): Promise<bigint> {
+  const estimate = await estimateGasWithoutBuffer.call(this, transaction);
+  return (estimate * 120n + 99n) / 100n;
+};
+
 const store = new Store(dataDir);
 const originalLog = console.log.bind(console);
 const originalError = console.error.bind(console);
@@ -61,7 +80,18 @@ function captureRetryableCycle(value: unknown): void {
   };
 }
 
-async function retryStaleQuote(): Promise<void> {
+function isRetryableRouterFailure(detail: string): boolean {
+  const normalized = detail.toLowerCase();
+  return (
+    normalized.includes("too little received") ||
+    (
+      normalized.includes("transaction execution reverted") &&
+      normalized.includes("0xcaf681a66d020601342297493863e78c")
+    )
+  );
+}
+
+async function retryRouterSwap(): Promise<void> {
   if (
     retryInFlight ||
     !latestCycle ||
@@ -71,7 +101,7 @@ async function retryStaleQuote(): Promise<void> {
   const cycle = latestCycle;
   try {
     // The original executor remains untouched. A single immediate retry gives
-    // it a fresh quote after a volatile pool invalidates the first minOut.
+    // a volatile or under-estimated router transaction fresh execution data.
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
     const chain = await import(
       pathToFileURL(join(agentRoot, "dist/chain.js")).href
@@ -152,10 +182,11 @@ console.log = (...args: unknown[]): void => {
       label === "execution" &&
       args[1] &&
       typeof args[1] === "object" &&
-      String((args[1] as Record<string, unknown>).detail ?? "")
-        .includes("Too little received")
+      isRetryableRouterFailure(
+        String((args[1] as Record<string, unknown>).detail ?? "")
+      )
     ) {
-      void retryStaleQuote();
+      void retryRouterSwap();
     }
   } else {
     store.saveAgentEvent("stdout", { args });

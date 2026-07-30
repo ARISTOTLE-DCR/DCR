@@ -86,11 +86,13 @@ Trust boundaries:
 - `aristotle-result.tar.gz` is the fixed source archive offered by the
   dashboard's verification link.
 
-The external agent runner records the original controller's events. If a swap
-simulation fails specifically with `Too little received`, it performs one
-immediate retry of the same Aristotle decision with a fresh quote. The retry
-does not change the action, amount, mathematical policy, or 0.75% slippage
-limit, and its result is written to the same public execution log.
+The external agent runner records the original controller's events and adds a
+20% gas-limit buffer to RPC estimates; unused gas is not charged. If the router
+rejects a swap because its quote became stale or its first transaction reverted,
+the runner performs one immediate retry of the same Aristotle decision with a
+fresh quote. The retry does not change the action, amount, mathematical policy,
+or 0.75% slippage limit, and its result is written to the same public execution
+log.
 
 ## Repository layout
 
