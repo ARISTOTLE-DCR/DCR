@@ -111,7 +111,7 @@ npm test
 npm run build
 
 cd /opt/dcr/dashboard
-export VITE_TWITTER_URL="https://x.com/"
+export VITE_TWITTER_URL="https://x.com/discreteonrh"
 export VITE_TOKEN_TICKER="DCR"
 npm ci --no-audit --no-fund
 npm run typecheck

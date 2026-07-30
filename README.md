@@ -178,7 +178,7 @@ The observer must use the same token and state path as the agent. Never put
 Create `dashboard/.env` from its `.env.example` before building:
 
 ```env
-VITE_TWITTER_URL=https://x.com/your_project
+VITE_TWITTER_URL=https://x.com/discreteonrh
 VITE_TOKEN_TICKER=DCR
 ```
 

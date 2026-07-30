@@ -16,7 +16,8 @@ interface TerminalLine {
   critical?: boolean;
 }
 
-const twitterUrl = import.meta.env.VITE_TWITTER_URL ?? "https://x.com/";
+const twitterUrl =
+  import.meta.env.VITE_TWITTER_URL ?? "https://x.com/discreteonrh";
 const tickerCode = (import.meta.env.VITE_TOKEN_TICKER ?? "DCR")
   .replace(/^\$/, "")
   .toUpperCase();
