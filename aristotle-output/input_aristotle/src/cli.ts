@@ -583,7 +583,10 @@ async function cycle(): Promise<void> {
 
       const recoverablePlan =
         action.kind === "permanent_lp" || action.kind === "weth_airdrop";
-      if (result.status === "confirmed") {
+      if (
+        result.status === "confirmed" ||
+        (result.status === "skipped" && action.kind === "hold")
+      ) {
         journal.stage = "confirmed";
         journal.pending = undefined;
       } else if (journal.pending || recoverablePlan) {
