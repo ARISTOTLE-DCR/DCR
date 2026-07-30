@@ -340,9 +340,18 @@ export function App() {
 
           <dl className="data-grid text-data">
             <div className="data-point">
-              <dt className="text-micro">CURRENT CONTROL ACTION</dt>
+              <dt className="text-micro">LAST ACTION</dt>
               <dd className={`highlight signal-${snapshot.decision.kind}`}>
                 {decision}
+              </dd>
+            </div>
+            <div className="data-point">
+              <dt className="text-micro">LIVE SIGNAL</dt>
+              <dd
+                className={`highlight signal-${snapshot.liveDecision.kind}`}
+                title={snapshot.liveDecision.reason}
+              >
+                {decisionLabel(snapshot.liveDecision.kind)}
               </dd>
             </div>
             <div className="data-point">

@@ -421,6 +421,7 @@ export class Observer {
         },
         claim,
         decision: decisionView(action, quoteOut),
+        liveDecision: decisionView(computedAction),
         agent: {
           online: agentOnline(state),
           stateBlock: state.lastBlock,

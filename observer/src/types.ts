@@ -56,6 +56,7 @@ export interface Snapshot {
     detail?: string;
   };
   decision: DecisionView;
+  liveDecision: DecisionView;
   agent: {
     online: boolean;
     stateBlock: number;
