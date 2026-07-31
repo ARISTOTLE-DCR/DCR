@@ -42,7 +42,7 @@ test("launch metadata enforces PONS name, ticker, description, and HTTPS rules",
   );
 });
 
-test("successful launch is durable, contains no raw key, and enforces one per 24h", async () => {
+test("successful launch is durable, contains no raw key, and allows another launch by the same account", async () => {
   const root = await mkdtemp(join(tmpdir(), "dcr-launch-test-"));
   try {
     const metadata: LaunchMetadata = { name: "Curved Cat", symbol: "CCAT", description: "" };
@@ -82,13 +82,17 @@ test("successful launch is durable, contains no raw key, and enforces one per 24
     const first = await service.handle(mention, "test");
     assert.match(first, /CA: 0x3333333333333333333333333333333333333333/);
     assert.match(first, /dcr-rh\.tech\/token\/0x3333/);
-    const second = await service.handle({ ...mention, id: "101" }, "test");
-    assert.match(second, /One launch per X account every 24h/);
+    const replay = await service.handle(mention, "test");
+    assert.match(replay, /CA: 0x3333333333333333333333333333333333333333/);
     assert.equal(calls, 1);
+    const second = await service.handle({ ...mention, id: "101" }, "test");
+    assert.match(second, /CA: 0x3333333333333333333333333333333333333333/);
+    assert.equal(calls, 2);
 
     const registry = await readFile(join(root, "registry.json"), "utf8");
     assert.doesNotMatch(registry, /privateKey|mnemonic|xpriv/i);
     const parsed = JSON.parse(registry) as { records: Array<{ stage: string; keystoreFile: string }> };
+    assert.equal(parsed.records.length, 2);
     assert.equal(parsed.records[0].stage, "launched");
     const keystore = await readFile(parsed.records[0].keystoreFile, "utf8");
     assert.match(keystore, /crypto/i);

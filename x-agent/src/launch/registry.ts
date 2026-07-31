@@ -41,15 +41,6 @@ export class LaunchRegistry {
     return updated;
   }
 
-  async recentForAuthor(authorId: string, sinceMs: number): Promise<LaunchRecord | undefined> {
-    const data = await this.read();
-    return data.records
-      .filter((record) => record.authorId === authorId)
-      .filter((record) => Date.parse(record.createdAt) >= sinceMs)
-      .filter((record) => record.stage !== "failed_before_funding")
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  }
-
   async countRecent(sinceMs: number): Promise<number> {
     const data = await this.read();
     return data.records

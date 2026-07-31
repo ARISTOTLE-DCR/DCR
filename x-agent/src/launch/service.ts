@@ -109,11 +109,6 @@ export class LaunchService {
     }
 
     const since = Date.now() - DAY_MS;
-    const recent = await this.registry.recentForAuthor(mention.authorId, since);
-    if (recent) {
-      const retryAt = new Date(Date.parse(recent.createdAt) + DAY_MS).toISOString().replace("T", " ").slice(0, 16) + " UTC";
-      return `One launch per X account every 24h. Your next launch is available after ${retryAt}.`;
-    }
     if (await this.registry.countRecent(since) >= this.config.globalDailyLimit) {
       return "The network-wide daily launch budget is full. Try again after the rolling 24h window advances.";
     }
