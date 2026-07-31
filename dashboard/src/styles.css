@@ -180,6 +180,14 @@ h1 {
   margin-bottom: 1rem;
 }
 
+.title-cluster h1.token-page-title {
+  max-width: 100%;
+  font-size: clamp(3rem, 10cqw, 8rem);
+  line-height: 0.88;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
 .concept-desc {
   max-width: 440px;
   padding: 10px;
@@ -983,6 +991,11 @@ h1 {
   h1 {
     font-size: clamp(3.35rem, 15.5vw, 4.25rem);
     line-height: 0.82;
+  }
+
+  .title-cluster h1.token-page-title {
+    font-size: clamp(2.75rem, 13vw, 4.15rem);
+    line-height: 0.9;
   }
 
   .meta-label {

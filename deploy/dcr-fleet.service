@@ -1,27 +1,28 @@
 [Unit]
-Description=DCR read-only observer and public dashboard
+Description=DCR isolated strategy fleet for public PONS launches
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-User=dcrobserver
-Group=dcrobserver
+User=dcragent
+Group=dcragent
 SupplementaryGroups=dcrstate dcrlogs dcrruntime dcrlaunch
 WorkingDirectory=/opt/dcr/observer
-ExecStart=/usr/bin/node dist/server.js
-Restart=always
-RestartSec=5
-TimeoutStopSec=15
 Environment=NODE_ENV=production
+EnvironmentFile=-/etc/dcr/fleet.env
+ExecStart=/usr/bin/node dist/fleet.js
+Restart=always
+RestartSec=10
+TimeoutStopSec=15
 UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/dcr/aristotle-output/input_aristotle/data /opt/dcr/observer/data
 ReadOnlyPaths=/var/lib/dcr-launcher
+ReadWritePaths=/opt/dcr/aristotle-output/input_aristotle/data /opt/dcr/observer/data /var/lib/dcr-launcher/locks
 
 [Install]
 WantedBy=multi-user.target

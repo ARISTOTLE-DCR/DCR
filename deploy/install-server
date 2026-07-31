@@ -75,7 +75,7 @@ systemctl daemon-reload
 systemctl reset-failed
 
 echo "Installing DCR source and dependencies..."
-for group_name in dcrruntime dcrstate dcrlogs; do
+for group_name in dcrruntime dcrstate dcrlogs dcrlaunch; do
   if ! getent group "$group_name" >/dev/null 2>&1; then
     groupadd --system "$group_name"
   fi
@@ -88,6 +88,7 @@ if ! id dcragent >/dev/null 2>&1; then
     --groups dcrruntime,dcrstate,dcrlogs \
     dcragent
 fi
+usermod -a -G dcrruntime,dcrstate,dcrlogs,dcrlaunch dcragent
 if ! id dcrobserver >/dev/null 2>&1; then
   useradd \
     --system \
@@ -96,6 +97,7 @@ if ! id dcrobserver >/dev/null 2>&1; then
     --groups dcrruntime,dcrstate,dcrlogs \
     dcrobserver
 fi
+usermod -a -G dcrruntime,dcrstate,dcrlogs,dcrlaunch dcrobserver
 rm -rf -- /opt/dcr
 install -d -o root -g dcrruntime -m 0750 /opt/dcr
 tar -xzf "$RELEASE_ARCHIVE" -C /opt/dcr
@@ -128,6 +130,11 @@ install -d -o dcragent -g dcrstate -m 2750 \
 install -d -o dcrobserver -g dcrlogs -m 2770 \
   /opt/dcr/observer/data
 install -d -o root -g dcragent -m 0750 /etc/dcr
+install -d -o root -g dcrlaunch -m 2750 \
+  /var/lib/dcr-launcher \
+  /var/lib/dcr-launcher/keystores
+install -d -o root -g dcrlaunch -m 2770 \
+  /var/lib/dcr-launcher/locks
 
 install -o root -g root -m 0644 \
   /opt/dcr/deploy/dcr-agent.service \
@@ -135,6 +142,20 @@ install -o root -g root -m 0644 \
 install -o root -g root -m 0644 \
   /opt/dcr/deploy/dcr-observer.service \
   /etc/systemd/system/dcr-observer.service
+install -o root -g root -m 0644 \
+  /opt/dcr/deploy/dcr-fleet.service \
+  /etc/systemd/system/dcr-fleet.service
+if [[ ! -f /etc/dcr/fleet.env ]]; then
+  install -o root -g root -m 0600 /dev/null /etc/dcr/fleet.env
+  cat > /etc/dcr/fleet.env <<'EOF'
+FLEET_ENABLED=false
+FLEET_SIGNING_ENABLED=false
+LAUNCH_REGISTRY_FILE=/var/lib/dcr-launcher/registry.json
+FLEET_OBSERVER_DATA_ROOT=/opt/dcr/observer/data
+AGENT_ROOT=/opt/dcr/aristotle-output/input_aristotle
+TRANSACTION_LOCK_DIR=/var/lib/dcr-launcher/locks
+EOF
+fi
 install -o root -g root -m 0755 \
   /opt/dcr/deploy/activate \
   /usr/local/sbin/activate
@@ -146,7 +167,7 @@ ln -sfn \
   /etc/nginx/sites-enabled/dcr-rh.tech
 
 systemctl daemon-reload
-systemctl enable dcr-agent.service dcr-observer.service
+systemctl enable dcr-agent.service dcr-observer.service dcr-fleet.service
 nginx -t
 systemctl reload nginx
 

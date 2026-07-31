@@ -1,8 +1,8 @@
 import cors from "cors";
 import express from "express";
-import { JsonRpcProvider } from "ethers";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { JsonRpcProvider, getAddress } from "ethers";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { config } from "./config.js";
 import { Store } from "./db.js";
 import { Observer } from "./observer.js";
@@ -10,8 +10,18 @@ import { buildProvenance } from "./provenance.js";
 
 const app = express();
 const store = new Store(config.dataDir);
-const observer = new Observer(store);
+const baseTarget = {
+  rpc: config.rpc,
+  token: config.token,
+  agentRoot: config.agentRoot,
+  stateFile: config.stateFile,
+  agentDataDir: config.agentDataDir,
+  pollMs: config.pollMs
+};
+const observer = new Observer(store, baseTarget);
 const clients = new Set<express.Response>();
+const tokenClients = new Map<string, Set<express.Response>>();
+const tokenObservers = new Map<string, { observer: Observer; store: Store }>();
 const seenAgentEventKeys = new Set<string>();
 const seenAgentEventOrder: string[] = [];
 const headProvider = new JsonRpcProvider(
@@ -25,6 +35,49 @@ let headRequestPending = false;
 function broadcast(event: string, payload: unknown): void {
   const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const client of clients) client.write(message);
+}
+
+function broadcastToken(token: string, event: string, payload: unknown): void {
+  const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const client of tokenClients.get(token.toLowerCase()) ?? []) client.write(message);
+}
+
+function resolveToken(address: string): { observer: Observer; store: Store } | undefined {
+  try { return tokenObservers.get(getAddress(address).toLowerCase()); }
+  catch { return undefined; }
+}
+
+function refreshTokenRegistry(): void {
+  let records: Array<{ stage?: string; tokenAddress?: string }> = [];
+  try {
+    const parsed = JSON.parse(readFileSync(config.launchRegistryFile, "utf8")) as { records?: typeof records };
+    records = Array.isArray(parsed.records) ? parsed.records : [];
+  } catch {
+    return;
+  }
+  for (const record of records) {
+    if (record.stage !== "launched" || !record.tokenAddress) continue;
+    let token: string;
+    try { token = getAddress(record.tokenAddress); }
+    catch { continue; }
+    const key = token.toLowerCase();
+    if (tokenObservers.has(key)) continue;
+    const slug = key.replace(/^0x/, "");
+    const agentDataDir = join(config.agentRoot, "data", slug);
+    const targetStore = new Store(join(config.fleetDataRoot, slug));
+    targetStore.setProvenance(store.provenance()!);
+    const targetObserver = new Observer(targetStore, {
+      rpc: config.rpc,
+      token,
+      agentRoot: config.agentRoot,
+      stateFile: join(agentDataDir, "state.json"),
+      agentDataDir,
+      pollMs: config.pollMs
+    });
+    targetObserver.subscribe((snapshot) => broadcastToken(key, "snapshot", snapshot));
+    tokenObservers.set(key, { observer: targetObserver, store: targetStore });
+    targetObserver.start();
+  }
 }
 
 function agentEventKey(event: {
@@ -77,6 +130,8 @@ app.use((_request, response, next) => {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
   next();
 });
 app.use(express.json({ limit: "64kb" }));
@@ -94,6 +149,48 @@ app.get("/api/status", (_request, response) => {
     snapshot: store.latestSnapshot(),
     provenance: store.provenance(),
     pollIntervalMs: config.pollMs
+  });
+});
+
+app.get("/api/tokens", (_request, response) => {
+  response.json({ tokens: [...tokenObservers.keys()] });
+});
+
+app.get("/api/token/:address/status", (request, response) => {
+  const target = resolveToken(request.params.address);
+  if (!target) return void response.status(404).json({ error: "Unknown launched token." });
+  response.json({ snapshot: target.store.latestSnapshot(), provenance: target.store.provenance(), pollIntervalMs: config.pollMs });
+});
+
+app.get("/api/token/:address/snapshots", (request, response) => {
+  const target = resolveToken(request.params.address);
+  if (!target) return void response.status(404).json({ error: "Unknown launched token." });
+  response.json({ snapshots: target.store.snapshots(Number(request.query.limit ?? 180)) });
+});
+
+app.get("/api/token/:address/activity", (request, response) => {
+  const target = resolveToken(request.params.address);
+  if (!target) return void response.status(404).json({ error: "Unknown launched token." });
+  const limit = Number(request.query.limit ?? 100);
+  response.json({ activity: target.store.activities(limit), agentEvents: target.store.agentEvents(limit) });
+});
+
+app.get("/api/token/:address/stream", (request, response) => {
+  let key: string;
+  try { key = getAddress(request.params.address).toLowerCase(); }
+  catch { return void response.status(400).json({ error: "Invalid token address." }); }
+  if (!tokenObservers.has(key)) return void response.status(404).json({ error: "Unknown launched token." });
+  response.setHeader("Content-Type", "text/event-stream");
+  response.setHeader("Cache-Control", "no-cache");
+  response.setHeader("Connection", "keep-alive");
+  response.flushHeaders();
+  response.write(`event: ready\ndata: ${JSON.stringify({ ok: true, block: liveBlock })}\n\n`);
+  const set = tokenClients.get(key) ?? new Set<express.Response>();
+  set.add(response);
+  tokenClients.set(key, set);
+  request.on("close", () => {
+    set.delete(response);
+    if (set.size === 0) tokenClients.delete(key);
   });
 });
 
@@ -126,16 +223,6 @@ app.get("/api/proof/archive", (_request, response) => {
   response.download(config.archive, "aristotle-result.tar.gz");
 });
 
-app.post("/api/refresh", async (_request, response) => {
-  try {
-    response.json({ snapshot: await observer.poll() });
-  } catch (error) {
-    response.status(503).json({
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-});
-
 app.get("/api/stream", (request, response) => {
   response.setHeader("Content-Type", "text/event-stream");
   response.setHeader("Cache-Control", "no-cache");
@@ -164,6 +251,8 @@ if (existsSync(config.dashboardDist)) {
 
 const provenance = buildProvenance(config.agentRoot, config.archive);
 store.setProvenance(provenance);
+tokenObservers.set(getAddress(config.token).toLowerCase(), { observer, store });
+refreshTokenRegistry();
 for (const event of store.agentEvents(500).reverse()) {
   rememberAgentEvent(agentEventKey(event));
 }
@@ -171,6 +260,7 @@ observer.start();
 void refreshLiveBlock();
 const headTimer = setInterval(() => void refreshLiveBlock(), 1_000);
 const agentEventTimer = setInterval(refreshAgentEvents, 500);
+const tokenRegistryTimer = setInterval(refreshTokenRegistry, 5_000);
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`PONS transparency observer: http://${config.host}:${config.port}`);
@@ -185,9 +275,15 @@ const shutdown = (): void => {
   observer.stop();
   clearInterval(headTimer);
   clearInterval(agentEventTimer);
+  clearInterval(tokenRegistryTimer);
+  for (const [key, target] of tokenObservers) {
+    if (key !== getAddress(config.token).toLowerCase()) target.observer.stop();
+  }
   headProvider.destroy();
   for (const client of clients) client.end();
   clients.clear();
+  for (const set of tokenClients.values()) for (const client of set) client.end();
+  tokenClients.clear();
   server.once("close", () => process.exit(0));
   server.close();
   server.closeIdleConnections();

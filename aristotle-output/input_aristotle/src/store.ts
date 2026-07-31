@@ -36,6 +36,15 @@ export interface PendingTransaction {
   nonce: number;
   rawTx?: string | undefined;
 }
+export interface GasPlan {
+  stage: "planned" | "prepared" | "confirmed" | "failed";
+  amountWeth: string;
+  txHash?: string | undefined;
+  rawTx?: string | undefined;
+  nonce?: number | undefined;
+  error?: string | undefined;
+  updatedAt: number;
+}
 export interface CycleJournal {
   cycleId: string;
   block: number;
@@ -123,6 +132,12 @@ export class Store {
   }
   saveLpPlan(p: LpPlan) {
     return atomic(this.path("lp.json"), p);
+  }
+  gasPlan() {
+    return read<GasPlan>(this.path("gas.json"));
+  }
+  saveGasPlan(p: GasPlan) {
+    return atomic(this.path("gas.json"), p);
   }
 }
 export function tokenDataDir(base: string, token: string): string {

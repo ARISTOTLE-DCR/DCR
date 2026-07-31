@@ -7,7 +7,7 @@ After=network-online.target
 Type=simple
 User=dcragent
 Group=dcragent
-SupplementaryGroups=dcrstate dcrlogs dcrruntime
+SupplementaryGroups=dcrstate dcrlogs dcrruntime dcrlaunch
 WorkingDirectory=/opt/dcr/observer
 ExecStart=/usr/bin/node dist/run-agent.js
 Restart=always
@@ -19,7 +19,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/dcr/aristotle-output/input_aristotle/data /opt/dcr/observer/data
+ReadWritePaths=/opt/dcr/aristotle-output/input_aristotle/data /opt/dcr/observer/data /var/lib/dcr-launcher/locks
 
 [Install]
 WantedBy=multi-user.target

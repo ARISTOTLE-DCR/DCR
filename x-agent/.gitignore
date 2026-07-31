@@ -1,0 +1,5 @@
+node_modules
+dist
+.env
+.aristotle-state.json
+.aristotle-oauth2.json

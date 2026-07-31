@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "id": "read-only-integration-fixture",
+      "stage": "launched",
+      "tokenAddress": "0x142af8469a6b00c2e9be169992381b9f59ffdd06"
+    }
+  ]
+}

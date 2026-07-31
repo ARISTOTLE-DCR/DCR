@@ -43,6 +43,7 @@ import {
   makePlan,
   syncHolderIndex,
 } from "./airdrop.js";
+import { ensureGasReserve } from "./gas.js";
 
 const token = process.env.TOKEN_ADDRESS;
 if (!token) throw new Error("TOKEN_ADDRESS is required");
@@ -366,6 +367,9 @@ async function cycle(): Promise<void> {
       );
 
     await recover(ctx, enabled);
+    const gasMaintenance = await ensureGasReserve(ctx, store, enabled);
+    if (gasMaintenance.status === "confirmed")
+      console.log("gas maintenance", gasMaintenance);
     let state = await store.state(ctx.token);
     const existing = await store.journal();
     if (existing?.stage === "executing")

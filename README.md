@@ -10,6 +10,11 @@ The public observer and dashboard expose balances, decisions, receipts,
 holder-index progress, LP-lock state, airdrop state, timers, source hashes and
 the mathematical specification without access to the signing key.
 
+The optional public-launch fleet extends the same policy to tokens created by
+the X agent. Each launch receives a generated encrypted creator wallet, its own
+PONS fee stream, state directory, 10–15 minute timer, holder index and public
+page at `/token/<CA>`. No reserve or private key is shared between tokens.
+
 ## Strategy
 
 For V3 `sqrtPriceX96 = s`, DCR computes the oriented displacement
@@ -56,6 +61,8 @@ before the economic action, so a restart does not reset the timer.
 - Live signing requires the key-derived address to exactly match the PONS fee
   recipient.
 - Native ETH is gas only; strategy capital is WETH plus the launched token.
+- If native ETH falls below the gas floor, the agent may unwrap only its own
+  WETH up to the configured gas target; the funding wallet is not reused.
 - Swaps use fresh quotes, 0.75% minimum-output tolerance, simulation, a 20% gas
   estimate buffer, exact approvals, receipt/balance reconciliation and at most
   one fresh-quote retry.
@@ -77,6 +84,8 @@ aristotle-result.tar.gz            original Aristotle v2 result
 fork-tests/                        Robinhood fork integration tests
 observer/                          read-only API, SSE and agent log capture
 dashboard/                         public React dashboard
+observer/src/fleet.ts              isolated multi-token worker supervisor
+x-agent/                           X replies, /scan and crash-safe /launch
 deploy/                            systemd, Nginx and activation scripts
 ```
 
@@ -126,6 +135,12 @@ TOKEN_LAUNCH_BLOCK=23534520
 ```
 
 Observer never receives the private key. See `observer/.env.example`.
+
+Public fleet signing is independently gated by `FLEET_ENABLED` and
+`FLEET_SIGNING_ENABLED`. Generated wallets are stored as encrypted JSON
+keystores under `/var/lib/dcr-launcher`; the registry never contains a raw
+private key. The X launcher and all strategy processes share an address-scoped
+nonce lock so a funding transfer cannot collide with a DCR cycle.
 
 ## Server activation
 

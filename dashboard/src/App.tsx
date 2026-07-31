@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api";
+import { apiForToken } from "./api";
 import { ReservoirCanvas } from "./ReservoirCanvas";
 import { StrategyModal } from "./StrategyModal";
 import type {
@@ -21,7 +21,10 @@ const twitterUrl =
 const tickerCode = (import.meta.env.VITE_TOKEN_TICKER ?? "DCR")
   .replace(/^\$/, "")
   .toUpperCase();
-const displayTicker = `$${tickerCode}`;
+const tokenPageAddress = (() => {
+  const match = window.location.pathname.match(/^\/token\/(0x[0-9a-fA-F]{40})\/?$/);
+  return match?.[1];
+})();
 
 function short(value: string, start = 6, end = 4): string {
   if (value.length <= start + end + 3) return value;
@@ -196,6 +199,7 @@ function Loading() {
 }
 
 export function App() {
+  const api = useMemo(() => apiForToken(tokenPageAddress), []);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [liveBlock, setLiveBlock] = useState<number | null>(null);
   const [provenance, setProvenance] = useState<Provenance | null>(null);
@@ -227,7 +231,7 @@ export function App() {
 
   useEffect(() => {
     void load();
-    const stream = new EventSource("/api/stream");
+    const stream = new EventSource(api.stream);
     stream.addEventListener("ready", (event) => {
       const payload = JSON.parse((event as MessageEvent<string>).data) as {
         block?: number | null;
@@ -263,7 +267,7 @@ export function App() {
 
   const logs = useMemo(
     () => snapshot && provenance
-      ? terminalLines(snapshot, provenance, activity, events, tickerCode)
+      ? terminalLines(snapshot, provenance, activity, events, snapshot.token.symbol.toUpperCase())
       : [],
     [snapshot, provenance, activity, events]
   );
@@ -274,6 +278,9 @@ export function App() {
 
   if (!snapshot || !provenance) return <Loading />;
 
+  const isTokenPage = Boolean(tokenPageAddress);
+  const tokenTickerCode = snapshot.token.symbol.replace(/^\$/, "").toUpperCase();
+  const tokenDisplayTicker = `$${tokenTickerCode}`;
   const decision = decisionLabel(snapshot.decision.kind);
   const refreshElapsed = Math.max(0, now - lastRefreshAt);
   const refreshRemaining = Math.max(0, pollIntervalMs - refreshElapsed);
@@ -294,7 +301,7 @@ export function App() {
     <>
       <div className="design-grid">
         <header className="header-zone text-micro">
-        <div>Discrete Curvature Reservoir</div>
+        <div>{isTokenPage ? `${snapshot.token.name} // DCR FLEET` : "Discrete Curvature Reservoir"}</div>
         <div>CHAIN: ROBINHOOD_4663 // BLOCK_{liveBlock ?? snapshot.block}</div>
         <div className="header-actions">
           <a
@@ -313,20 +320,15 @@ export function App() {
 
         <div className="title-cluster">
           <div className="meta-label text-micro">
-            DCR — COUNTERCYCLICAL FEEDBACK CONTROLLER
+            {tokenTickerCode} — COUNTERCYCLICAL FEE CONTROLLER
           </div>
-          <h1>
-            Discrete
-            <br />
-            Curvature
-            <br />
-            Reservoir
+          <h1 className={isTokenPage ? "token-page-title" : undefined}>
+            {isTokenPage ? snapshot.token.name : <><span>Discrete</span><br /><span>Curvature</span><br /><span>Reservoir</span></>}
           </h1>
           <div className="concept-desc">
-            DCR v2 governs PONS creator fees through a buy-biased solvency
-            cone. It buys drawdowns, sells only exceptional overextension, and
-            routes calm surplus into burns, permanently locked liquidity, or
-            transparent WETH distributions to holders.
+            {isTokenPage
+              ? `${tokenDisplayTicker} is governed by an isolated copy of the DCR v2 creator-fee strategy. Its generated creator wallet, reserves, decisions, and cycle history are independent from every other token.`
+              : "DCR v2 governs PONS creator fees through a buy-biased solvency cone. It buys drawdowns, sells only exceptional overextension, and routes calm surplus into burns, permanently locked liquidity, or transparent WETH distributions to holders."}
           </div>
         </div>
 
@@ -363,8 +365,8 @@ export function App() {
               <dd>{compact(snapshot.treasury.wethBalance, 8)} WETH</dd>
             </div>
             <div className="data-point">
-              <dt className="text-micro">{displayTicker} RESERVOIR</dt>
-              <dd>{compact(snapshot.treasury.tokenBalance)} {displayTicker}</dd>
+              <dt className="text-micro">{tokenDisplayTicker} RESERVOIR</dt>
+              <dd>{compact(snapshot.treasury.tokenBalance)} {tokenDisplayTicker}</dd>
             </div>
             <div className="data-point">
               <dt className="text-micro">MARKET CAP / RECENT WETH FLOW</dt>
@@ -499,7 +501,7 @@ export function App() {
       {strategyOpen && (
         <StrategyModal
           onClose={() => setStrategyOpen(false)}
-          ticker={displayTicker}
+            ticker={tokenDisplayTicker}
         />
       )}
     </>

@@ -10,7 +10,6 @@ import {
   getAddress,
   zeroPadValue
 } from "ethers";
-import { config } from "./config.js";
 import { Store } from "./db.js";
 import { hashProof } from "./provenance.js";
 import type {
@@ -100,18 +99,29 @@ interface Sidecars {
   airdrop?: AirdropPlan | undefined;
 }
 
-let modulesPromise: Promise<AgentModules> | undefined;
+export interface ObserverTarget {
+  rpc: string;
+  token: string;
+  agentRoot: string;
+  stateFile: string;
+  agentDataDir: string;
+  pollMs: number;
+}
 
-async function agentModules(): Promise<AgentModules> {
+const modulePromises = new Map<string, Promise<AgentModules>>();
+
+async function agentModules(agentRoot: string): Promise<AgentModules> {
+  let modulesPromise = modulePromises.get(agentRoot);
   modulesPromise ??= Promise.all([
-    import(pathToFileURL(join(config.agentRoot, "dist/constants.js")).href),
-    import(pathToFileURL(join(config.agentRoot, "dist/chain.js")).href),
-    import(pathToFileURL(join(config.agentRoot, "dist/math.js")).href)
+    import(pathToFileURL(join(agentRoot, "dist/constants.js")).href),
+    import(pathToFileURL(join(agentRoot, "dist/chain.js")).href),
+    import(pathToFileURL(join(agentRoot, "dist/math.js")).href)
   ]).then(([constants, chain, math]) => ({
     constants: constants as Record<string, unknown>,
     chain: chain as AgentModules["chain"],
     math: math as AgentModules["math"]
   }));
+  modulePromises.set(agentRoot, modulesPromise);
   return modulesPromise;
 }
 
@@ -124,18 +134,19 @@ async function readJson<T>(path: string): Promise<T | undefined> {
 }
 
 async function readState(
+  target: ObserverTarget,
   initialState: (token: string) => AgentState
 ): Promise<AgentState> {
-  const state = await readJson<AgentState>(config.stateFile);
-  return state?.version === 2 ? state : initialState(config.token);
+  const state = await readJson<AgentState>(target.stateFile);
+  return state?.version === 2 ? state : initialState(target.token);
 }
 
-async function readSidecars(): Promise<Sidecars> {
+async function readSidecars(target: ObserverTarget): Promise<Sidecars> {
   const [holderIndex, cycle, lp, airdrop] = await Promise.all([
-    readJson<HolderIndex>(join(config.agentDataDir, "holders.json")),
-    readJson<CycleJournal>(join(config.agentDataDir, "cycle.json")),
-    readJson<LpPlan>(join(config.agentDataDir, "lp.json")),
-    readJson<AirdropPlan>(join(config.agentDataDir, "airdrop.json"))
+    readJson<HolderIndex>(join(target.agentDataDir, "holders.json")),
+    readJson<CycleJournal>(join(target.agentDataDir, "cycle.json")),
+    readJson<LpPlan>(join(target.agentDataDir, "lp.json")),
+    readJson<AirdropPlan>(join(target.agentDataDir, "airdrop.json"))
   ]);
   return { holderIndex, cycle, lp, airdrop };
 }
@@ -259,7 +270,7 @@ export class Observer {
   private timer: NodeJS.Timeout | undefined;
   private listeners = new Set<(snapshot: Snapshot) => void>();
 
-  constructor(private readonly store: Store) {}
+  constructor(private readonly store: Store, private readonly target: ObserverTarget) {}
 
   subscribe(listener: (snapshot: Snapshot) => void): () => void {
     this.listeners.add(listener);
@@ -274,7 +285,7 @@ export class Observer {
     }
     this.busy = true;
     try {
-      const { constants, chain, math } = await agentModules();
+      const { constants, chain, math } = await agentModules(this.target.agentRoot);
       const discover = chain.discover as unknown as (
         rpc: string,
         token: string
@@ -310,11 +321,11 @@ export class Observer {
         tokenIs0: boolean
       ) => bigint;
 
-      const context = await discover(config.rpc, config.token);
+      const context = await discover(this.target.rpc, this.target.token);
       const provider = context.provider as JsonRpcProvider;
       const [state, sidecars] = await Promise.all([
-        readState(initialState),
-        readSidecars()
+        readState(this.target, initialState),
+        readSidecars(this.target)
       ]);
       const [observation, treasury, block, nativeBalance] = await Promise.all([
         observe(context, state.lastBlock + 1),
@@ -324,7 +335,7 @@ export class Observer {
       ]);
       if (!block) throw new Error("latest block unavailable");
 
-      const tokenContract: any = new Contract(config.token, TOKEN_ABI, provider);
+      const tokenContract: any = new Contract(this.target.token, TOKEN_ABI, provider);
       const [name, symbol, decimalsRaw, totalSupply] = await Promise.all([
         tokenContract.name() as Promise<string>,
         tokenContract.symbol() as Promise<string>,
@@ -383,7 +394,7 @@ export class Observer {
       const claim = await claimPreview(
         provider,
         constants.LOCKER as string,
-        config.token,
+        this.target.token,
         context.recipient as string,
         context.tokenIs0 as boolean
       );
@@ -398,7 +409,7 @@ export class Observer {
         blockTimestamp: block.timestamp,
         chainId: 4663,
         token: {
-          address: getAddress(config.token),
+          address: getAddress(this.target.token),
           name,
           symbol,
           decimals,
@@ -485,7 +496,7 @@ export class Observer {
       }
     };
     void loop();
-    this.timer = setInterval(() => void loop(), config.pollMs);
+    this.timer = setInterval(() => void loop(), this.target.pollMs);
   }
 
   stop(): void {
@@ -508,7 +519,7 @@ export class Observer {
     const feeTopic = feeInterface.getEvent("FeesClaimed")!.topicHash;
     const swapTopic = poolInterface.getEvent("Swap")!.topicHash;
     const transferTopic = tokenInterface.getEvent("Transfer")!.topicHash;
-    const tokenTopic = zeroPadValue(getAddress(config.token), 32);
+    const tokenTopic = zeroPadValue(getAddress(this.target.token), 32);
     const recipientTopic = zeroPadValue(
       getAddress(context.recipient as string),
       32
@@ -528,7 +539,7 @@ export class Observer {
         topics: [swapTopic]
       }),
       provider.getLogs({
-        address: config.token,
+        address: this.target.token,
         fromBlock,
         toBlock: latest,
         topics: [transferTopic, recipientTopic, burnTopic]

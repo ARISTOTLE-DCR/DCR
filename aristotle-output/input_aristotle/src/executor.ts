@@ -19,6 +19,7 @@ import type { Context } from "./chain.js";
 import type { Action } from "./math.js";
 import type { AirdropPlan } from "./airdrop.js";
 import { quote } from "./chain.js";
+import { withNonceLock } from "./nonce-lock.js";
 export interface ExecutionResult {
   status: "skipped" | "confirmed" | "failed";
   detail: string;
@@ -46,7 +47,7 @@ async function receiptOf(tx: any): Promise<TransactionReceipt> {
     throw e;
   }
 }
-async function sendBuffered(
+export async function sendBuffered(
   contract: any,
   method: string,
   args: any[],
@@ -59,39 +60,42 @@ async function sendBuffered(
   // hash/raw transaction, and only then broadcast. A crash can therefore
   // rebroadcast the exact same transaction instead of creating a duplicate.
   if (runner instanceof Wallet && runner.provider) {
-    const populated = await fn.populateTransaction(...args);
     const from = getAddress(runner.address);
-    const estimate = await runner.provider.estimateGas({
-      ...populated,
-      from,
+    let response: any;
+    await withNonceLock(from, async () => {
+      const populated = await fn.populateTransaction(...args);
+      const estimate = await runner.provider!.estimateGas({
+        ...populated,
+        from,
+      });
+      const gasLimit = (estimate * 120n + 99n) / 100n;
+      const [network, feeData, nonce] = await Promise.all([
+        runner.provider!.getNetwork(),
+        runner.provider!.getFeeData(),
+        runner.provider!.getTransactionCount(from, "pending"),
+      ]);
+      const transaction: Record<string, unknown> = {
+        ...populated,
+        chainId: network.chainId,
+        nonce,
+        gasLimit,
+      };
+      if (feeData.maxFeePerGas !== null) {
+        transaction.type = 2;
+        transaction.maxFeePerGas = feeData.maxFeePerGas;
+        transaction.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ?? 0n;
+      } else {
+        if (feeData.gasPrice === null)
+          throw new Error("provider returned no transaction fee data");
+        transaction.gasPrice = feeData.gasPrice;
+      }
+      const rawTx = await runner.signTransaction(transaction);
+      const hash = keccak256(rawTx);
+      await onPrepared?.({ hash, nonce, rawTx });
+      response = await runner.provider!.broadcastTransaction(rawTx);
+      if (response.hash !== hash)
+        throw new Error("broadcast transaction hash mismatch");
     });
-    const gasLimit = (estimate * 120n + 99n) / 100n;
-    const [network, feeData, nonce] = await Promise.all([
-      runner.provider.getNetwork(),
-      runner.provider.getFeeData(),
-      runner.provider.getTransactionCount(from, "pending"),
-    ]);
-    const transaction: Record<string, unknown> = {
-      ...populated,
-      chainId: network.chainId,
-      nonce,
-      gasLimit,
-    };
-    if (feeData.maxFeePerGas !== null) {
-      transaction.type = 2;
-      transaction.maxFeePerGas = feeData.maxFeePerGas;
-      transaction.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ?? 0n;
-    } else {
-      if (feeData.gasPrice === null)
-        throw new Error("provider returned no transaction fee data");
-      transaction.gasPrice = feeData.gasPrice;
-    }
-    const rawTx = await runner.signTransaction(transaction);
-    const hash = keccak256(rawTx);
-    await onPrepared?.({ hash, nonce, rawTx });
-    const response = await runner.provider.broadcastTransaction(rawTx);
-    if (response.hash !== hash)
-      throw new Error("broadcast transaction hash mismatch");
     return receiptOf(response);
   }
 
@@ -112,21 +116,23 @@ export async function settlePrepared(
   if (known) return known;
 
   if (transaction.rawTx) {
-    try {
-      const response = await ctx.provider.broadcastTransaction(
-        transaction.rawTx,
-      );
-      if (response.hash !== transaction.hash)
-        throw new Error("recovery broadcast hash mismatch");
-    } catch (error) {
-      const text = String(error).toLowerCase();
-      if (
-        !text.includes("already known") &&
-        !text.includes("known transaction") &&
-        !text.includes("nonce has already been used")
-      )
-        throw error;
-    }
+    await withNonceLock(ctx.signer?.address ?? ctx.recipient, async () => {
+      try {
+        const response = await ctx.provider.broadcastTransaction(
+          transaction.rawTx!,
+        );
+        if (response.hash !== transaction.hash)
+          throw new Error("recovery broadcast hash mismatch");
+      } catch (error) {
+        const text = String(error).toLowerCase();
+        if (
+          !text.includes("already known") &&
+          !text.includes("known transaction") &&
+          !text.includes("nonce has already been used")
+        )
+          throw error;
+      }
+    });
   }
 
   return ctx.provider.waitForTransaction(transaction.hash, 2, 180_000);

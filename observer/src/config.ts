@@ -25,5 +25,7 @@ export const config = {
   agentDataDir: dirname(stateFile),
   archive: resolve(root, process.env.ARISTOTLE_ARCHIVE ?? "../aristotle-result.tar.gz"),
   dataDir: resolve(root, process.env.OBSERVER_DATA_DIR ?? "./data"),
+  fleetDataRoot: resolve(root, process.env.FLEET_OBSERVER_DATA_ROOT ?? "./data"),
+  launchRegistryFile: resolve(process.env.LAUNCH_REGISTRY_FILE ?? "/var/lib/dcr-launcher/registry.json"),
   dashboardDist: resolve(root, process.env.DASHBOARD_DIST ?? "../dashboard/dist")
 };
