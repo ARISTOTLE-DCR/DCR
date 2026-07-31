@@ -14,7 +14,8 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=15
 Environment=NODE_ENV=production
-UMask=0027
+# Token data directories are shared with the isolated fleet through dcrlogs.
+UMask=0007
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

@@ -7,7 +7,8 @@ import { parseLaunchCommand } from "./command.js";
 import { LaunchInputError, validateMetadata } from "./interpreter.js";
 import { LaunchService, type TokenLauncher } from "./service.js";
 import type { LaunchMetadata } from "./types.js";
-import { Wallet, hexlify, randomBytes } from "ethers";
+import { JsonRpcProvider, Transaction, Wallet, hexlify, randomBytes } from "ethers";
+import { preparedFundingDisposition, signPrepared } from "./onchain.js";
 
 test("launch command accepts one natural-language payload", () => {
   assert.deepEqual(
@@ -97,7 +98,7 @@ test("successful launch is durable, contains no raw key, and enforces one per 24
   }
 });
 
-test("startup recovery resumes the exact prepared funding record without creating another wallet", async () => {
+test("startup recovery resumes a legacy failed-after-funding record without creating another wallet", async () => {
   const root = await mkdtemp(join(tmpdir(), "dcr-launch-recovery-"));
   const password = "another-strong-test-password-32-chars";
   try {
@@ -115,7 +116,7 @@ test("startup recovery resumes the exact prepared funding record without creatin
         authorId: "42",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        stage: "funding_prepared",
+        stage: "failed_after_funding",
         metadata: { name: "Recovered Cat", symbol: "RCAT", description: "" },
         walletAddress: wallet.address,
         keystoreFile,
@@ -154,8 +155,11 @@ test("startup recovery resumes the exact prepared funding record without creatin
       dashboardBaseUrl: "https://dcr-rh.tech",
       globalDailyLimit: 25
     }, { interpret: async () => { throw new Error("not used"); } }, launcher);
-    await service.recoverPending();
+    const notices = await service.recoverPending();
     assert.equal(recoveredFundingHash, "0x" + "11".repeat(32));
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].tweetId, "777");
+    assert.match(notices[0].reply, /CA: 0x3333333333333333333333333333333333333333/);
     const registry = JSON.parse(await readFile(registryFile, "utf8")) as { records: Array<Record<string, unknown>> };
     assert.equal(registry.records[0].stage, "launched");
     assert.equal(registry.records[0].tokenAddress, "0x" + "33".repeat(20));
@@ -164,4 +168,62 @@ test("startup recovery resumes the exact prepared funding record without creatin
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("prepared launch transactions are explicitly signed as EIP-1559 type 2", async () => {
+  const wallet = new Wallet(hexlify(randomBytes(32)));
+  const provider = {
+    getNetwork: async () => ({ chainId: 4663n }),
+    getTransactionCount: async () => 7
+  } as unknown as JsonRpcProvider;
+  const prepared = await signPrepared(wallet, provider, {
+    to: "0x" + "11".repeat(20),
+    value: 1n,
+    gasLimit: 21_000n,
+    type: 2,
+    maxFeePerGas: 42n,
+    maxPriorityFeePerGas: 0n
+  });
+  const decoded = Transaction.from(prepared.rawTx);
+  assert.equal(decoded.type, 2);
+  assert.equal(decoded.chainId, 4663n);
+  assert.equal(decoded.nonce, 7);
+  assert.equal(decoded.maxFeePerGas, 42n);
+  assert.equal(decoded.maxPriorityFeePerGas, 0n);
+  assert.equal(decoded.from, wallet.address);
+});
+
+test("prepared funding with a consumed nonce is replaced only when the target is still unfunded", async () => {
+  const wallet = new Wallet(hexlify(randomBytes(32)));
+  const signingProvider = {
+    getNetwork: async () => ({ chainId: 4663n }),
+    getTransactionCount: async () => 9
+  } as unknown as JsonRpcProvider;
+  const prepared = await signPrepared(wallet, signingProvider, {
+    to: "0x" + "22".repeat(20),
+    value: 1_000n,
+    gasLimit: 21_000n,
+    type: 2,
+    maxFeePerGas: 42n,
+    maxPriorityFeePerGas: 0n
+  });
+  const consumedProvider = {
+    getTransactionReceipt: async () => null,
+    getTransaction: async () => null,
+    getBalance: async () => 0n,
+    getTransactionCount: async () => 10
+  } as unknown as JsonRpcProvider;
+  assert.equal(
+    await preparedFundingDisposition(consumedProvider, prepared, "0x" + "22".repeat(20), 1_000n),
+    "replace"
+  );
+
+  const alreadyFundedProvider = {
+    ...consumedProvider,
+    getBalance: async () => 1_000n
+  } as unknown as JsonRpcProvider;
+  assert.equal(
+    await preparedFundingDisposition(alreadyFundedProvider, prepared, "0x" + "22".repeat(20), 1_000n),
+    "confirmed"
+  );
 });

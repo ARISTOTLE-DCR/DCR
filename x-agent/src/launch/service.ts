@@ -39,6 +39,8 @@ export interface TokenLauncher {
   ): Promise<LaunchResult>;
 }
 
+export type LaunchRecoveryNotice = { tweetId: string; reply: string };
+
 export class LaunchService {
   private tail: Promise<void> = Promise.resolve();
   private readonly registry: LaunchRegistry;
@@ -56,12 +58,13 @@ export class LaunchService {
     return this.enqueue(() => this.execute(mention, request));
   }
 
-  async recoverPending(): Promise<void> {
-    if (!this.config.enabled) return;
+  async recoverPending(): Promise<LaunchRecoveryNotice[]> {
+    if (!this.config.enabled) return [];
+    const notices: LaunchRecoveryNotice[] = [];
     await this.enqueue(async () => {
       const records = (await this.registry.read()).records;
       for (let record of records) {
-        if (["launched", "failed_before_funding", "failed_after_funding"].includes(record.stage)) continue;
+        if (["launched", "failed_before_funding"].includes(record.stage)) continue;
         if (record.stage === "reserved" || !record.keystoreFile || !record.walletAddress || !record.launchSalt) {
           await this.registry.update(record.id, { stage: "failed_before_funding", error: "RecoveryError: incomplete pre-funding record" });
           continue;
@@ -78,12 +81,14 @@ export class LaunchService {
             recoveryFrom(record)
           );
           await this.complete(record.id, result);
+          notices.push({ tweetId: record.requestTweetId, reply: launchReply(result, this.config.dashboardBaseUrl) });
           logger.info("Recovered pending PONS launch", { tweetId: record.requestTweetId, tokenAddress: result.tokenAddress });
         } catch (error) {
           await this.fail(record, error);
         }
       }
     });
+    return notices;
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -224,14 +229,17 @@ export class LaunchService {
       ? `${error.name}: ${error.message}`.slice(0, 500)
       : `${error instanceof Error ? error.name : "Error"}: launch failed safely`;
     await this.registry.update(record.id, {
-      stage: afterFunding ? "failed_after_funding" : "failed_before_funding",
+      // Keep the exact durable stage for recoverable on-chain work. This lets
+      // startup reconciliation inspect the persisted transaction instead of
+      // guessing whether funding or launch was already submitted.
+      stage: afterFunding ? record.stage : "failed_before_funding",
       error: storedError
     });
     logger.error("PONS launch failed safely", {
       tweetId: record.requestTweetId,
       authorId: record.authorId,
       stage: record.stage,
-      errorType: error instanceof Error ? error.name : "unknown"
+      ...safeErrorDiagnostic(error)
     });
   }
 }
@@ -243,10 +251,11 @@ function recoveryFrom(record: LaunchRecord): LaunchRecovery {
   const launch = record.launchTxHash && record.launchRawTx && record.launchNonce !== undefined && record.predictedTokenAddress
     ? { hash: record.launchTxHash, rawTx: record.launchRawTx, nonce: record.launchNonce, predictedTokenAddress: record.predictedTokenAddress }
     : undefined;
+  const fundingConfirmed = Boolean(launch) || ["funded", "launch_prepared", "launch_submitted"].includes(record.stage);
   return {
     salt: record.launchSalt,
-    fundingConfirmed: ["funded", "launch_prepared", "launch_submitted"].includes(record.stage),
-    funding: record.stage === "funding_prepared" ? funding : undefined,
+    fundingConfirmed,
+    funding: !fundingConfirmed ? funding : undefined,
     launch
   };
 }
@@ -268,4 +277,18 @@ function resultFromRecord(record: LaunchRecord): LaunchResult {
 export function launchReply(result: LaunchResult, dashboardBaseUrl: string): string {
   const base = dashboardBaseUrl.replace(/\/$/, "");
   return `Launched ${result.metadata.name} ($${result.metadata.symbol}) on PONS.\nCA: ${result.tokenAddress}\nAutonomous fee strategy: ${base}/token/${result.tokenAddress}`;
+}
+
+function safeErrorDiagnostic(error: unknown): { errorType: string; errorCode?: string; errorMessage?: string } {
+  if (!(error instanceof Error)) return { errorType: "unknown" };
+  const candidate = error as Error & { code?: unknown; shortMessage?: unknown };
+  const rawMessage = typeof candidate.shortMessage === "string" ? candidate.shortMessage : candidate.message;
+  const errorMessage = rawMessage
+    .replace(/0x[0-9a-f]{96,}/gi, "<redacted-transaction>")
+    .slice(0, 300);
+  return {
+    errorType: error.name,
+    errorCode: typeof candidate.code === "string" ? candidate.code : undefined,
+    errorMessage
+  };
 }

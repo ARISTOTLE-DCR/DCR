@@ -15,7 +15,8 @@ ExecStart=/usr/bin/node dist/fleet.js
 Restart=always
 RestartSec=10
 TimeoutStopSec=15
-UMask=0027
+# Generated-token state is shared with the read-only observer through dcrlogs.
+UMask=0007
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

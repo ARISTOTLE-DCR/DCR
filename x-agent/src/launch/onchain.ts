@@ -2,12 +2,14 @@ import {
   BaseWallet,
   Contract,
   JsonRpcProvider,
+  Transaction,
   Wallet,
   getAddress,
   hexlify,
   keccak256,
   parseEther,
   randomBytes,
+  type FeeData,
   type TransactionRequest,
   type TransactionReceipt
 } from "ethers";
@@ -83,8 +85,12 @@ export class PonsOnchainLauncher {
         provider.getBalance(funder.address)
       ]);
       if (!launchEnabled) throw new LaunchBudgetError("PONS launches are currently disabled on-chain.");
-      const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas;
-      if (!gasPrice) throw new LaunchBudgetError("RPC did not return a usable gas price.");
+      const fees = eip1559Fees(feeData);
+      const feeOverrides = {
+        type: 2,
+        maxFeePerGas: fees.maxFeePerGas,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas
+      } as const;
       const salt = recovery.salt ?? hexlify(randomBytes(32));
       const params = launchParams(metadata, imageUri, wallet.address);
 
@@ -94,36 +100,62 @@ export class PonsOnchainLauncher {
         this.config.launchConfigId,
         this.config.dexId,
         salt,
-        { value: launchFee }
+        { value: launchFee, ...feeOverrides }
       ) as bigint;
       const bufferedEstimate = bufferGas(estimated);
-      if (launchFee + bufferedEstimate * gasPrice > this.config.fundingWei) {
+      if (launchFee + bufferedEstimate * fees.maxFeePerGas > this.config.fundingWei) {
         throw new LaunchBudgetError(
           `Current PONS fee plus buffered gas exceeds the ${formatFunding(this.config.fundingWei)} ETH launch-wallet cap.`
         );
       }
 
+      let fundingReady = Boolean(recovery.fundingConfirmed);
       if (recovery.funding) {
-        await settleRaw(provider, recovery.funding, this.config.confirmations, funder.address);
-        await hooks.funded();
-      } else if (!recovery.fundingConfirmed) {
-        const fundingGas = 21_000n * gasPrice;
-        if (funderBalance < this.config.fundingWei + fundingGas + this.config.funderMinimumRemainingWei) {
-          throw new LaunchBudgetError("The launch funder cannot pay 0.001 ETH while preserving its protected gas reserve.");
+        const disposition = await preparedFundingDisposition(
+          provider,
+          recovery.funding,
+          wallet.address,
+          this.config.fundingWei
+        );
+        if (disposition === "confirmed") {
+          await hooks.funded();
+          fundingReady = true;
+        } else if (disposition === "known" || disposition === "rebroadcast") {
+          if (disposition === "rebroadcast") {
+            await withNonceLock(funder.address, () => broadcastRaw(provider, recovery.funding!));
+          }
+          await waitRaw(provider, recovery.funding, this.config.confirmations);
+          await hooks.funded();
+          fundingReady = true;
+        } else if (disposition === "blocked") {
+          throw new Error("The saved funding nonce is occupied by an unresolved pending transaction; recovery will retry later.");
         }
-        let preparedFunding!: PreparedLaunchTransaction;
-        await withNonceLock(funder.address, async () => {
-          preparedFunding = await signPrepared(funder, provider, {
-            to: wallet.address,
-            value: this.config.fundingWei,
-            gasLimit: 21_000n,
-            gasPrice
+      }
+
+      if (!fundingReady) {
+        const walletBalance = await provider.getBalance(wallet.address);
+        if (walletBalance >= this.config.fundingWei) {
+          await hooks.funded();
+        } else {
+          const fundingAmount = this.config.fundingWei - walletBalance;
+          const fundingGas = 21_000n * fees.maxFeePerGas;
+          if (funderBalance < fundingAmount + fundingGas + this.config.funderMinimumRemainingWei) {
+            throw new LaunchBudgetError("The launch funder cannot top the isolated wallet up to 0.001 ETH while preserving its protected gas reserve.");
+          }
+          let preparedFunding!: PreparedLaunchTransaction;
+          await withNonceLock(funder.address, async () => {
+            preparedFunding = await signPrepared(funder, provider, {
+              to: wallet.address,
+              value: fundingAmount,
+              gasLimit: 21_000n,
+              ...feeOverrides
+            });
+            await hooks.fundingPrepared(preparedFunding);
+            await broadcastRaw(provider, preparedFunding);
           });
-          await hooks.fundingPrepared(preparedFunding);
-          await broadcastRaw(provider, preparedFunding);
-        });
-        await waitRaw(provider, preparedFunding, this.config.confirmations);
-        await hooks.funded();
+          await waitRaw(provider, preparedFunding, this.config.confirmations);
+          await hooks.funded();
+        }
       }
 
       const signer = wallet.connect(provider);
@@ -133,11 +165,11 @@ export class PonsOnchainLauncher {
         this.config.launchConfigId,
         this.config.dexId,
         salt,
-        { value: launchFee, gasPrice }
+        { value: launchFee, ...feeOverrides }
       ) as bigint;
       const exactGasLimit = bufferGas(exactEstimate);
       const walletBalance = await provider.getBalance(wallet.address);
-      if (launchFee + exactGasLimit * gasPrice > walletBalance) {
+      if (launchFee + exactGasLimit * fees.maxFeePerGas > walletBalance) {
         throw new LaunchBudgetError("Exact launch gas rose above the isolated wallet balance after funding.");
       }
       const predicted = getAddress(await factory.launchToken.staticCall(
@@ -145,7 +177,7 @@ export class PonsOnchainLauncher {
         this.config.launchConfigId,
         this.config.dexId,
         salt,
-        { value: launchFee, gasLimit: exactGasLimit, gasPrice }
+        { value: launchFee, gasLimit: exactGasLimit, ...feeOverrides }
       ) as string);
       const populated = await factory.launchToken.populateTransaction(
         params,
@@ -160,7 +192,7 @@ export class PonsOnchainLauncher {
           ...await signPrepared(signer, provider, {
             ...populated,
             gasLimit: exactGasLimit,
-            gasPrice
+            ...feeOverrides
           }),
           predictedTokenAddress: predicted
         };
@@ -176,7 +208,7 @@ export class PonsOnchainLauncher {
   }
 }
 
-async function signPrepared(
+export async function signPrepared(
   signer: BaseWallet,
   provider: JsonRpcProvider,
   request: TransactionRequest
@@ -185,8 +217,39 @@ async function signPrepared(
     provider.getNetwork(),
     provider.getTransactionCount(signer.address, "pending")
   ]);
-  const rawTx = await signer.signTransaction({ ...request, chainId: network.chainId, nonce });
+  const rawTx = await signer.signTransaction({ ...request, type: 2, chainId: network.chainId, nonce });
   return { hash: keccak256(rawTx), rawTx, nonce };
+}
+
+export type PreparedFundingDisposition = "confirmed" | "known" | "rebroadcast" | "replace" | "blocked";
+
+export async function preparedFundingDisposition(
+  provider: Pick<JsonRpcProvider, "getTransactionReceipt" | "getTransaction" | "getBalance" | "getTransactionCount">,
+  transaction: PreparedLaunchTransaction,
+  walletAddress: string,
+  targetBalance: bigint
+): Promise<PreparedFundingDisposition> {
+  const receipt = await provider.getTransactionReceipt(transaction.hash);
+  if (receipt) {
+    if (receipt.status !== 1) throw new Error("Prepared funding transaction reverted.");
+    return "confirmed";
+  }
+  if (await provider.getTransaction(transaction.hash)) return "known";
+  if (await provider.getBalance(walletAddress) >= targetBalance) return "confirmed";
+  const [latestNonce, pendingNonce] = await Promise.all([
+    provider.getTransactionCount(walletAddressFromRaw(transaction.rawTx), "latest"),
+    provider.getTransactionCount(walletAddressFromRaw(transaction.rawTx), "pending")
+  ]);
+  if (latestNonce > transaction.nonce) return "replace";
+  if (pendingNonce > transaction.nonce) return "blocked";
+  return "rebroadcast";
+}
+
+function walletAddressFromRaw(rawTx: string): string {
+  // ethers validates the signature while recovering the sender.
+  const parsed = Transaction.from(rawTx);
+  if (!parsed.from) throw new Error("Prepared transaction has no recoverable sender.");
+  return parsed.from;
 }
 
 async function settleRaw(
@@ -271,6 +334,15 @@ function launchParams(metadata: LaunchMetadata, logo: string, feeWallet: string)
 
 function bufferGas(value: bigint): bigint {
   return (value * 120n + 99n) / 100n;
+}
+
+export function eip1559Fees(feeData: FeeData): { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } {
+  const maxFeePerGas = feeData.maxFeePerGas ?? feeData.gasPrice;
+  if (!maxFeePerGas) throw new LaunchBudgetError("RPC did not return usable EIP-1559 fee data.");
+  return {
+    maxFeePerGas,
+    maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ?? 0n
+  };
 }
 
 function formatFunding(value: bigint): string {

@@ -39,7 +39,21 @@ const launchService = new LaunchService({
 const handler = new MentionHandler(config.BOT_HANDLE, reasoner, scanner, launchService);
 const stateWrites = new StateWriteQueue((snapshot) => saveState(config.STATE_FILE, snapshot));
 
-await launchService.recoverPending();
+for (const notice of await launchService.recoverPending()) {
+  try {
+    await twitter.reply(notice.tweetId, notice.reply);
+    logger.info("Published recovered PONS launch", { tweetId: notice.tweetId });
+  } catch (error) {
+    const candidate = error as { name?: unknown; code?: unknown; data?: { status?: unknown; detail?: unknown } };
+    logger.warn("Recovered PONS launch could not be published to the original post", {
+      tweetId: notice.tweetId,
+      errorType: typeof candidate?.name === "string" ? candidate.name : "unknown",
+      errorCode: typeof candidate?.code === "number" || typeof candidate?.code === "string" ? candidate.code : undefined,
+      status: candidate?.data?.status,
+      detail: typeof candidate?.data?.detail === "string" ? candidate.data.detail.slice(0, 200) : undefined
+    });
+  }
+}
 
 let firstPoll = !state.sinceId;
 let stopping = false;
